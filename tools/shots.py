@@ -99,7 +99,7 @@ def race_frames(out, ticks=(200, 560, 900, 1500), vehicle="dirt", rivals=3, tag=
     ai = GhostAI(turbo=True, turbo_temp=26)
     app.input.force_touch_ui = True
     orig = app.input.race_controls
-    app.input.race_controls = lambda: ai.controls(race_scene.race.bike)
+    app.input.race_controls = lambda *_: ai.controls(race_scene.race.bike)
     last = max(ticks)
     for t in range(1, last + 1):
         app.input.begin_frame()

@@ -72,6 +72,29 @@ def temp_gauge(surf, temp, x, y, w=150, h=10, ticks=0):
     pygame.draw.rect(surf, C.DANGER, (dz, y, x + w - dz, h), 1)
 
 
+def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
+    """One-button heat gauge, 0..overheat: normal | BOOST band | red SUPER window."""
+    panel(surf, (x - 4, y - 16, w + 8, h + 22), 150)
+    full = C.TEMP_OVERHEAT
+    px = lambda t: x + int(w * max(0.0, min(full, t)) / full)        # noqa: E731
+    b0, s0 = px(C.TEMP_STABLE_A), px(C.ONE_SUPER_AT)
+    surf.fill((40, 36, 52), (x, y, w, h))
+    surf.fill((86, 62, 40), (b0, y, s0 - b0, h))                      # boost band
+    surf.fill((110, 30, 36), (s0, y, x + w - s0, h))                  # red window
+    if temp < C.TEMP_STABLE_A:
+        col = C.GOOD
+    elif temp < C.ONE_SUPER_AT:
+        col = (255, 150, 50)
+    else:
+        col = C.DANGER if (ticks // 4) % 2 == 0 else (255, 230, 200)
+    surf.fill(col, (x, y, px(temp) - x, h))
+    surf.fill((250, 250, 250), (b0, y - 2, 1, h + 4))
+    pygame.draw.rect(surf, C.DANGER, (s0, y - 1, x + w - s0, h + 2), 1)
+    label = {0: ("HEAT", C.HUD_FG), 1: ("BOOST", (255, 170, 70)), 2: ("SUPER BOOST!", C.DANGER)}
+    s, c = label.get(boost_level, label[0])
+    text(surf, s, (x, y - 14), 16, c)
+
+
 def race_hud(surf, race, width, ticks, extra_left=None, best=None):
     b = race.bike
     panel(surf, (6, 6, 150, 40))
@@ -92,7 +115,11 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None):
         for i, line in enumerate(extra_left):
             text(surf, line, (12, 52 + i * 14), 16)
     gx = width // 2 - 75
-    temp_gauge(surf, b.temp, gx, C.VIEW_H - 18, ticks=ticks)
+    if getattr(b, "one_button", False):
+        lvl = b.boost_level if b.state == "ride" else 0
+        heat_gauge_one(surf, b.temp, lvl, gx, C.VIEW_H - 18, ticks=ticks)
+    else:
+        temp_gauge(surf, b.temp, gx, C.VIEW_H - 18, ticks=ticks)
     text(surf, f"{int(b.speed):02d}", (gx + 162, C.VIEW_H - 24), 22)
     text(surf, "SPD", (gx + 162, C.VIEW_H - 34), 12)
     if b.state == "overheat" and (ticks // 10) % 2 == 0:

@@ -34,6 +34,7 @@ class BikeStats:
     coolant_reset: float = C.TEMP_START
     coolant_chill: int = 0             # ticks of no heat gain after a pad
     overheat_ticks: int = C.OVERHEAT_TICKS
+    throttle_grace: int = C.THROTTLE_GRACE_TICKS
     pitch_rate: float = C.PITCH_RATE
     nose_drop: float = C.AIR_NOSE_DROP
     land_tolerance: float = C.LAND_TOLERANCE
@@ -102,6 +103,11 @@ class Bike:
         self.wobble = 0
         self.chill = 0
         self._accel_acc = 0.0
+        self._grace = 0                  # ticks of throttle grace left after letting go
+        self.in_grace = False
+        self.one_button = False          # one-button throttle: heat drives boost (player option)
+        self.boost_level = 0             # 0 none, 1 boost/turbo, 2 super boost (for effects/HUD)
+        self.crash_total = self.stats.crash_ticks
         self._coast_acc = 0
         self._drag_acc = 0
         self._last_cool_col = -1
@@ -142,6 +148,16 @@ class Bike:
             return ev
 
         self._lanes(ctl)
+        # Throttle grace: briefly after letting go, speed holds instead of coasting
+        # down (e.g. while a mouse player re-anchors). Holds at the A cap, so tapping
+        # turbo can't keep turbo speed for free, and temperature is frozen meanwhile
+        # so tapping can't cool the engine either.
+        if ctl.a or ctl.b:
+            self._grace = self.stats.throttle_grace
+            self.in_grace = False
+        else:
+            self.in_grace = self._grace > 0
+            self._grace = max(0, self._grace - 1)
         self._throttle(ctl)
         self._temperature(ctl, ev)
         if self.state != "ride":
@@ -169,18 +185,32 @@ class Bike:
         else:
             self.lane_pos += math.copysign(C.LANE_CHANGE_RATE, d)
 
+    def _boost_from(self, ctl):
+        """0/1/2 boost level for this tick. One-button mode: from the temperature."""
+        if not (ctl.a or ctl.b):
+            return 0
+        if not self.one_button:
+            return 1 if ctl.b else 0
+        if self.temp >= C.ONE_SUPER_AT:
+            return 2
+        return 1 if self.temp >= C.TEMP_STABLE_A else 0
+
     def _throttle(self, ctl):
+        self.boost_level = self._boost_from(ctl)
         if self.airborne:
             self._drag_acc += 1
             if self._drag_acc >= C.AIR_DRAG_INTERVAL:
                 self._drag_acc = 0
                 self.speed = max(0.0, self.speed - 1)
             return
-        turbo = ctl.b
+        turbo = self.boost_level > 0
         held = ctl.a or ctl.b
-        cap = self.max_speed(turbo) if held else 0
+        holding = held or self.in_grace
+        cap = self.max_speed(turbo) if held else self.max_speed(False) if holding else 0
+        if self.boost_level == 2:
+            cap += C.SUPER_BOOST_EXTRA * self.grip()
         if self.track.surface_at(self.lane_index, self.x) == MUD:
-            cap = min(cap, self.stats.mud_speed) if held else 0
+            cap = min(cap, self.stats.mud_speed) if holding else 0
             mud = True
         else:
             mud = False
@@ -191,13 +221,18 @@ class Bike:
                 self.speed = min(cap, self.speed + (2 if turbo else 1))
         elif self.speed > cap:
             self._coast_acc += 1
-            interval = 2 if mud else (C.OVERSPEED_INTERVAL if held else C.COAST_INTERVAL)
+            interval = 2 if mud else (C.OVERSPEED_INTERVAL if holding else C.COAST_INTERVAL)
             if self._coast_acc >= interval:
                 self._coast_acc = 0
                 self.speed = max(cap, self.speed - 1)
 
     def _temperature(self, ctl, ev):
         s = self.stats
+        if self.in_grace:
+            return
+        if self.one_button:
+            self._temperature_one(ctl, ev)
+            return
         if self.chill > 0:
             self.chill -= 1
             if ctl.a or ctl.b:
@@ -216,6 +251,39 @@ class Bike:
             self.state = "overheat"
             self.timer = s.overheat_ticks
             ev.append(("overheat",))
+
+    def _temperature_one(self, ctl, ev):
+        """One-button heat: holding always heats (A rate, then turbo rate past the
+        old A ceiling); letting go cools, never below idle unless a crash zeroed it."""
+        s = self.stats
+        if self.chill > 0:
+            self.chill -= 1
+            if ctl.a or ctl.b:
+                return
+        if ctl.a or ctl.b:
+            self.temp += s.heat_a if self.temp < C.TEMP_STABLE_A else s.heat_b
+        elif self.temp > C.TEMP_START:
+            self.temp = max(C.TEMP_START, self.temp - s.cool_coast - s.passive_cool)
+        if self.temp >= C.TEMP_OVERHEAT:
+            self.temp = C.TEMP_OVERHEAT
+            self._explode(ev)
+
+    def _explode(self, ev):
+        """Pushed past the red window: the bike blows up. A long crash; no forgiveness."""
+        self.stats_counters["crashes"] += 1
+        self.state = "crash"
+        self.crash_total = self.stats.crash_ticks + C.EXPLODE_EXTRA_TICKS
+        self.timer = self.crash_total
+        self.crash_reason = "explode"
+        self.crash_speed = self.speed
+        self.speed = 0.0
+        self.airborne = False
+        self.h = self.track.ground(self.x)
+        self.vy = 0.0
+        self.temp = 0.0
+        self.boost_level = 0
+        self._dropped = False
+        ev.append(("explode",))
 
     def _ground(self, ctl, ev):
         new_x = self.x + self.vx
@@ -330,8 +398,12 @@ class Bike:
             return
         self.stats_counters["crashes"] += 1
         self.state = "crash"
-        self.timer = self.stats.crash_ticks
+        self.crash_total = self.stats.crash_ticks
+        self.timer = self.crash_total
         self.crash_reason = reason
+        self.boost_level = 0
+        if self.one_button:
+            self.temp = 0.0          # heat is a resource in this mode: a crash loses it
         self.crash_speed = self.speed
         self.speed = 0.0
         self.airborne = False
@@ -339,8 +411,12 @@ class Bike:
 
     def _step_crash(self, ev):
         self.timer -= 1
-        elapsed = self.stats.crash_ticks - self.timer
-        if elapsed < 18 and self.crash_reason != "pit":
+        elapsed = self.crash_total - self.timer
+        if self.crash_reason == "explode":
+            if not self._dropped and elapsed >= self.crash_total * C.EXPLODE_DROP_AT:
+                self._dropped = True
+                ev.append(("bike_drop",))
+        elif elapsed < 18 and self.crash_reason != "pit":
             self.x += max(0.0, 2.5 - elapsed * 0.14)   # bike tumbles a bit
         if self.timer <= 0:
             # Respawn on solid ground: walk out of a pit to the next column.

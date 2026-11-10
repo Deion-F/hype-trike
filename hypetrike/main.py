@@ -107,7 +107,6 @@ class App:
         self.audio = Audio()
         from meta.profile import Profile
         self.profile = Profile.load()
-        self.audio.enabled = self.profile.settings.get("sound", True) and self.audio.enabled
         self.apply_settings()
         self.running = True
         self.scene = None
@@ -121,7 +120,8 @@ class App:
         self.input.layout(self.view.width)
         self.view.smooth = st.get("smooth", False)
         if hasattr(self.audio, "configure"):
-            self.audio.configure(st.get("sound", True), st.get("music", True))
+            self.audio.configure(st.get("sound", True), st.get("music", True),
+                                 st.get("sfx_vol", 1.0), st.get("music_vol", 1.0))
 
     def set_scene(self, scene):
         self.scene = scene

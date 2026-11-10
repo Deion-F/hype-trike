@@ -91,7 +91,8 @@ DEFAULTS = {
     "selected": {"vehicle": "dirt", "livery": "flame", "start_upgrade": None},
     "settings": {"sound": True, "music": True, "smooth": False,
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
-                 "touch_ui": "auto"},
+                 "touch_ui": "auto", "mouse_steer": "angle", "throttle_mode": "classic",
+                 "sfx_vol": 1.0, "music_vol": 1.0},
     "tracks": {},
     "best_laps": {},
 }
@@ -107,6 +108,14 @@ class Profile:
                     d[k].update(v)
                 else:
                     d[k] = v
+        # Older saves had On/Off toggles; the volume sliders replace them (0% = off).
+        st = d["settings"]
+        for flag, vol in (("sound", "sfx_vol"), ("music", "music_vol")):
+            if not st.get(flag, True):
+                st[vol] = 0.0
+                st[flag] = True
+        if st.get("mouse_steer") is True:      # old On/Off setting
+            st["mouse_steer"] = "angle"
         self.data = d
 
     # convenience accessors

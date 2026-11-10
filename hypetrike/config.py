@@ -43,6 +43,14 @@ HEAT_A = 0.06               # per tick while below 17 on A
 HEAT_B = 0.07               # per tick on B (no ceiling until overheat)
 COOL_A = 0.03               # per tick when above 17 on A
 COOL_COAST = 0.05           # per tick when off throttle
+# One-button throttle (setting "throttle_mode" = "one"): holding always heats the
+# engine; past TEMP_STABLE_A it boosts on its own, past ONE_SUPER_AT it super-boosts,
+# and reaching TEMP_OVERHEAT explodes the bike. Any crash resets the heat to 0.
+ONE_SUPER_AT = 29.5         # start of the red super-boost window (~0.6 s before boom)
+SUPER_BOOST_EXTRA = 3       # extra top speed over turbo while super-boosting
+EXPLODE_EXTRA_TICKS = 100   # explosion lasts this much longer than a normal crash
+EXPLODE_DROP_AT = 0.82      # fraction of the explosion when the new bike touches down
+THROTTLE_GRACE_TICKS = 36   # 0.6 s after letting go: speed holds (A cap), temp frozen
 OVERHEAT_TICKS = 150        # engine stall duration
 
 # --- air / landing ---------------------------------------------------------------

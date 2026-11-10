@@ -1,0 +1,12 @@
+1. Add in CPU players similar to the original game. They player should be able to run sideways into them with the logic being:
+    - if the players back wheel touches the CPUs front wheel, the CPU falls and the player gets some reward (coins, points, whatever makes the mose sense for progression)
+    - if the player runs into the CPU sideways, both of them fall (maybe add powerups to allow for a shield or a certain number of free tackles into other players)
+    - if the CPUs back tire runs into the players front tire, the player falls and maybe the CPU is marked as a rival that if the player can make them fall before the heat is over, they get some bonus or they get something back that the CPU stole
+
+## To discuss later: mouse controls (from recording review, 2026-11-10)
+
+2. **Re-anchoring without losing throttle.** Moving the anchor means letting go of both buttons, which costs speed (in the third recording, speed sat at 0 for ~2 s around 0:35 while repositioning). Trying first: a 0.6 s throttle grace period (speed holds briefly after release). Idea if that's not enough: middle-click / scroll-wheel click drops a new anchor while throttle stays held. Concern: keep the controls simple.
+3. **Accidental wheelies in whoops.** A ground lean held through whoops is very costly (sim at speed 46: no lean = 1 bounce, 2.2 s; wheelie = 11 bounces, 7.9 s; lean forward = 13 bounces, 8.3 s). With the mouse it's easy to sit slightly behind the anchor without meaning to. Decision so far: keep mouse wheelies (small edge off ramps, a learnable skill, looks cool). Possible softer fix: make the ground-wheelie zone need a slightly bigger offset than the air lean.
+4. **Starts.** Throttle started after GO in the recording (1st to 4th within 0.5 s). Holding the left button through the countdown also sets the anchor early. Maybe hint at this on the heat intro or during the countdown.
+5. **Coolant pads in one-button mode.** Pads still reset heat to idle (8), which in one-button mode throws away built-up boost, so pads become something to avoid rather than seek out. Options: pads only pull heat down out of the red window, pads drop heat to just under the super window, or pads become a small instant speed bump instead.
+6. **Crash resets heat to 0 only in one-button mode.** In throttle + boost mode heat is purely bad, so zeroing it on a crash would be a reward. Revisit if the modes should share this rule.

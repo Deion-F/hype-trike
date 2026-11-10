@@ -40,6 +40,7 @@ class RaceScene(Scene):
         self.info_lines = info_lines or []
         self.target = target
         self.race = Race(track, stats, rivals=rivals, rival_skill=rival_skill, seed=seed)
+        self.race.bike.one_button = app.profile.settings.get("throttle_mode") == "one"
         self.renderer = WorldRenderer(app.view.width, track.theme)
         self.popups = hud.Popups()
         self.paused = False
@@ -50,6 +51,10 @@ class RaceScene(Scene):
         self.forfeit = False
         self._last_count = None
         app.input.race_mode = True
+        app.input.reset_mouse()
+        self._cursor_visible = True
+        self.boost_k = 0.0          # 0..1 fade of the turbo flame / wind effect
+        self.boost_lvl = 1          # 1 boost, 2 super (last level seen, kept while fading)
         app.audio.music(None)
 
     def on_resize(self):
@@ -83,7 +88,7 @@ class RaceScene(Scene):
             self.app.input.consume_edges()
             return
         self.ticks += 1
-        ctl = self.app.input.race_controls()
+        ctl = self.app.input.race_controls(self.race.bike)
         self.app.input.consume_edges()
         if self.race.countdown > 0:
             sec = self.race.countdown // C.FPS
@@ -107,6 +112,13 @@ class RaceScene(Scene):
                 self.renderer.emit_burst(b, (240, 220, 180), 18, 3)       # dirt
                 self.renderer.emit_burst(b, (255, 210, 80), 10, 4.5)      # sparks
                 self.renderer.emit_burst(b, (255, 120, 40), 6, 3.5)
+            elif k == "explode":
+                self.popups.add("BOOM!", (255, 140, 40), sx + 20, sy - 60, 90)
+                self.renderer.emit_burst(b, (255, 90, 30), 24, 5)         # fire
+                self.renderer.emit_burst(b, (255, 220, 90), 16, 6.5)      # sparks
+                self.renderer.emit_burst(b, (70, 64, 70), 18, 3)          # smoke / debris
+            elif k == "bike_drop":
+                self.renderer.emit_burst(b, (240, 220, 180), 12, 2)       # dust as it lands
             elif k == "forgiven":
                 self.popups.add("SAVED!", C.COOL, sx, sy - 40)
             elif k == "overheat":
@@ -124,6 +136,12 @@ class RaceScene(Scene):
         self.app.audio.engine(b, ctl)
         if b.state == "ride" and (ctl.a or ctl.b) and self.ticks % 2 == 0:
             self.renderer.emit_dust(b, b.x, ctl.b)
+        boosting = b.boost_level > 0 and b.state == "ride" and self.race.started
+        if boosting:
+            self.boost_lvl = b.boost_level
+        self.boost_k = min(1.0, self.boost_k + 0.25) if boosting else max(0.0, self.boost_k - 0.15)
+        if boosting and self.ticks % (2 if b.boost_level == 2 else 3) == 0:
+            self.renderer.emit_boost_sparks(b, b.x)
         self.renderer.particles.update()
         self.popups.update()
         if self.finish_hold > 0:
@@ -154,6 +172,8 @@ class RaceScene(Scene):
 
     def _leave(self):
         self.app.input.race_mode = False
+        self.app.input.reset_mouse()
+        pygame.mouse.set_visible(True)
         self.app.audio.stop_engine()
         if self.on_done:
             self.on_done(self.result)
@@ -181,7 +201,11 @@ class RaceScene(Scene):
             if bk.speed > 0 and bk.state == "ride":
                 period = max(2, int(10 - bk.speed / 6))
                 frame = (bk.ticks // period) % 2
+            if me and self.boost_k > 0 and bk.state == "ride":
+                rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
             rd.draw_bike(surf, bk, cam, liv, frame, me)
+        if self.boost_k > 0 and b.state == "ride":
+            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k)
         rd.particles.draw(surf, cam)
         self.popups.draw(surf)
         W = self.app.view.width
@@ -192,6 +216,12 @@ class RaceScene(Scene):
         if self.title and self.race.countdown > 0:
             hud.text(surf, self.title, (W // 2, 70), 30, C.HUD_FG, anchor="center")
         self.app.input.draw_touch(surf, hud.font)
+        steering = (self.app.input.mouse_steering and not self.paused and self.result is None)
+        if steering:
+            self.app.input.draw_mouse_guide(surf, rd.bike_screen_pos(b, cam), b.airborne)
+        if steering == self._cursor_visible:      # only touch the OS cursor on change
+            self._cursor_visible = not steering
+            pygame.mouse.set_visible(self._cursor_visible)
         if self.paused:
             hud.panel(surf, (W // 2 - 110, 110, 220, 150), 220)
             hud.text(surf, "PAUSED", (W // 2, 136), 34, C.ACCENT, anchor="center")

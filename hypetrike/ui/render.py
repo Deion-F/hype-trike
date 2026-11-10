@@ -238,8 +238,59 @@ class WorldRenderer:
             for i in range(3):
                 pygame.draw.circle(surf, (235, 235, 240), (int(sx + 6 + i * 5), int(sy - 26 - i * 5)), 3 + i)
 
+    def _draw_explosion(self, surf, bike, sx, sy, livery, vehicle):
+        """Fireball, rider launched sky-high, then a new bike parachutes in."""
+        T = bike.crash_total
+        e = T - bike.timer
+        liv = art.LIVERIES[livery]
+        # fireball (first ~0.5 s), then a smouldering scorch mark
+        if e < 30:
+            k = e / 30
+            for r, col in ((26, (255, 90, 30)), (18, (255, 180, 50)), (9, (255, 245, 200))):
+                rad = max(1, int(r * (0.4 + 0.9 * k) * (1.1 - 0.5 * k)))
+                pygame.draw.circle(surf, col, (int(sx), int(sy - 10)), rad)
+        scorch_x = sx
+        if e < T * C.EXPLODE_DROP_AT:
+            pygame.draw.ellipse(surf, (40, 34, 30), (scorch_x - 16, sy - 3, 32, 6))
+        # rider: big arc up and forward, a dazed pause, then jog back
+        p1, p2 = 0.30 * T, 0.45 * T
+        dist = 80
+        if e < p1:
+            k = e / p1
+            rx, ry = sx + dist * k, sy - 18 - 110 * math.sin(math.pi * k)
+            surf.blit(art.draw_rider_tumble(liv, int(e / 3) % 4), (rx - 12, ry - 12))
+        elif e < p2:
+            surf.blit(art.draw_rider_tumble(liv, 1), (sx + dist - 12, sy - 18))
+        else:
+            k = min(1.0, (e - p2) / (T * C.EXPLODE_DROP_AT - p2))
+            rx = sx + dist * (1 - k) + 14 * (k >= 1)       # waits beside the landing spot
+            surf.blit(art.draw_rider_run(liv, e), (rx - 8, sy - 22))
+        # replacement bike floats down on a parachute, lands, then bounces once
+        d0, d1 = 0.45 * T, T * C.EXPLODE_DROP_AT
+        if e >= d0:
+            img, a = self.sprites.rotated(vehicle, livery, 0, 0, rider=False)
+            if e < d1:
+                k = (e - d0) / (d1 - d0)
+                y = sy - 230 * (1 - k)
+                sway = math.sin(e * 0.15) * 5
+                art.blit_rotated(surf, img, 0, (sx + sway, y))
+                cx, cy = sx + sway, y - 46
+                pygame.draw.line(surf, (230, 230, 240), (cx - 14, cy + 2), (sx + sway - 12, y - 18), 1)
+                pygame.draw.line(surf, (230, 230, 240), (cx + 14, cy + 2), (sx + sway + 12, y - 18), 1)
+                dome = [(cx + 18 * math.cos(t), cy + 2 - 14 * math.sin(t))
+                        for t in (math.pi * i / 10 for i in range(11))]
+                pygame.draw.polygon(surf, (240, 70, 60), dome)
+                pygame.draw.polygon(surf, (250, 250, 250), [(cx, cy + 2)] + dome[4:7])
+                pygame.draw.line(surf, (150, 40, 40), (cx - 18, cy + 2), (cx + 18, cy + 2), 2)
+            else:
+                bounce = max(0.0, 6 * math.sin(min(math.pi, (e - d1) * 0.35)))
+                art.blit_rotated(surf, img, 0, (sx, sy - bounce))
+
     def _draw_crash(self, surf, bike, sx, sy, livery, vehicle):
-        T = bike.stats.crash_ticks
+        if bike.crash_reason == "explode":
+            self._draw_explosion(surf, bike, sx, sy, livery, vehicle)
+            return
+        T = bike.crash_total
         e = T - bike.timer
         liv = art.LIVERIES[livery]
         if bike.crash_reason == "pit":
@@ -267,6 +318,61 @@ class WorldRenderer:
             k = (e - p2) / (T - p2)
             rx = sx + dist * (1 - k)
             surf.blit(art.draw_rider_run(liv, e), (rx - 8, sy - 22))
+
+    # -- turbo -----------------------------------------------------------------------
+    # Flame origin in sprite coords: the dirt-bike family's tail pipe (art.draw_dirt_bike);
+    # the trike has no pipe, so it fires from the back of its rear body.
+    EXHAUST = {"trike": (4, 25)}
+    EXHAUST_DEFAULT = (9, 27)
+
+    def exhaust_pos(self, bike, cam_x):
+        """Screen position of the tail pipe and the backward unit vector along the bike."""
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        a = math.radians(bike.angle)
+        ex, ey = self.EXHAUST.get(bike.stats.vehicle, self.EXHAUST_DEFAULT)
+        dx, dy = ex - art.CONTACT[0], ey - art.CONTACT[1]
+        px = sx + dx * math.cos(a) + dy * math.sin(a)
+        py = sy - dx * math.sin(a) + dy * math.cos(a)
+        return px, py, (-math.cos(a), math.sin(a))
+
+    def draw_boost_flame(self, surf, bike, cam_x, t, k=1.0, super_boost=False):
+        """Flickering exhaust flame behind the bike (drawn before the sprite). k = 0..1 fade.
+        Super boost: a longer flame with a hot blue-white core."""
+        px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
+        nx, ny = -by, bx                       # perpendicular
+        flick = (t * 7919) % 5
+        layers = ((24 + flick * 2, 9, (255, 100, 30)), (16 + flick, 6, (255, 200, 60)),
+                  (8 + flick // 2, 3, (255, 250, 220)))
+        if super_boost:
+            layers = ((26 + flick * 3, 11, (240, 60, 40)), (18 + flick * 2, 7, (255, 170, 50)),
+                      (12 + flick, 4, (150, 220, 255)), (6, 2, (255, 255, 255)))
+        for length, width, col in layers:
+            L, w = length * k, width * (0.5 + 0.5 * k) / 2
+            pts = [(px + nx * w, py + ny * w), (px + bx * L, py + by * L), (px - nx * w, py - ny * w)]
+            pygame.draw.polygon(surf, col, pts)
+
+    def draw_boost_wind(self, surf, bike, cam_x, t, k=1.0):
+        """Speed streaks rushing past the rider (drawn over the bikes)."""
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        w, h = 220, 56
+        layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        speed = 10 + bike.speed * 0.3
+        for i in range(7):
+            y = 4 + (i * 29 + 11) % (h - 8)
+            ln = 16 + (i % 3) * 10
+            x = w - ((t * speed + i * 61) % (w + ln))
+            a = int((170 + (i % 2) * 70) * k)
+            th = 1 + (i % 3 == 0)
+            pygame.draw.line(layer, (40, 30, 60, a // 2), (x, y + th), (x + ln, y + th), 1)
+            pygame.draw.line(layer, (255, 255, 255, a), (x, y), (x + ln, y), th)
+        surf.blit(layer, (sx - w + 70, sy - h + 6))
+
+    def emit_boost_sparks(self, bike, cam_x):
+        px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
+        wx = bike.x + (px - (C.BIKE_SCREEN_X + bike.x - cam_x))
+        for col in ((255, 200, 70), (255, 130, 40)):
+            self.particles.emit(wx + bx * 6, py + by * 6, bx * self._rng.uniform(1, 2.5) - bike.vx * 0.2,
+                                by * 2 + self._rng.uniform(-0.6, 0.3), self._rng.randint(6, 12), col)
 
     def emit_dust(self, bike, cam_x, turbo=False):
         if bike.airborne or bike.state != "ride" or bike.speed < 6:

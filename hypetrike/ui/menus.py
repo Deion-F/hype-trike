@@ -198,17 +198,26 @@ class TitleScene(BackdropScene):
             from race import fmt_time
             hud.text(surf, f"Best lap: {fmt_time(best)}", (W - 10, C.VIEW_H - 10), 16,
                      anchor="bottomright")
-        hud.text(surf, "Z throttle  X turbo  arrows lean/lane", (10, C.VIEW_H - 10), 16,
-                 (200, 196, 220), anchor="bottomleft")
+        one = self.app.profile.settings.get("throttle_mode") == "one"
+        hint = ("Z hold: heat builds into boost - don't hit the red!  arrows lean/lane" if one
+                else "Z throttle  X turbo  arrows lean/lane")
+        if self.app.input.mouse_enabled:
+            hint = ("Mouse: hold to ride, heat builds boost - click, then drag back/fwd to lean, up/down for lanes"
+                    if one else "Mouse: L throttle  R turbo - click, then drag back/fwd to lean, up/down for lanes")
+        hud.text(surf, hint, (10, C.VIEW_H - 10), 16, (200, 196, 220), anchor="bottomleft")
 
+
+SLIDER = "slider"     # SETTING_ROWS marker: a 0..1 volume slider instead of a cycled option
 
 SETTING_ROWS = [
     ("lane_mode", "Lane change", [("swipe", "Swipe"), ("buttons", "Buttons"), ("both", "Swipe + buttons")]),
     ("button_scale", "Button size", [(0.85, "Small"), (1.0, "Normal"), (1.2, "Large")]),
     ("swap_sides", "Throttle side", [(False, "Right"), (True, "Left")]),
     ("touch_ui", "Touch buttons", [("auto", "Auto"), ("on", "Always"), ("off", "Hidden")]),
-    ("sound", "Sound effects", [(True, "On"), (False, "Off")]),
-    ("music", "Music", [(True, "On"), (False, "Off")]),
+    ("throttle_mode", "Throttle", [("classic", "Throttle + boost"), ("one", "One button")]),
+    ("mouse_steer", "Mouse lean", [("angle", "Aim angle"), ("hold", "Hold lean"), (False, "Off")]),
+    ("sfx_vol", "Sound effects", SLIDER),
+    ("music_vol", "Music", SLIDER),
     ("smooth", "Desktop scaling", [(False, "Sharp"), (True, "Smooth")]),
 ]
 
@@ -218,14 +227,31 @@ class SettingsScene(BackdropScene):
         super().__init__(app)
         self.back = back or (lambda: app.set_scene(TitleScene(app)))
         self.sel = 0
+        self.drag = None          # (row index, pointer id) while dragging a slider
 
     def _rows(self):
         W = self.app.view.width
-        return [pygame.Rect(W // 2 - 170, 66 + i * 34, 340, 30) for i in range(len(SETTING_ROWS) + 1)]
+        return [pygame.Rect(W // 2 - 170, 56 + i * 29, 340, 26) for i in range(len(SETTING_ROWS) + 1)]
+
+    @staticmethod
+    def _bar(r):
+        return pygame.Rect(r.right - 172, r.centery - 5, 112, 10)
+
+    def _set_vol(self, i, v, save=True):
+        key = SETTING_ROWS[i][0]
+        st = self.app.profile.settings
+        st[key] = max(0.0, min(1.0, round(v * 20) / 20))
+        self.app.apply_settings()
+        if save:
+            self.app.profile.save()
+            self.app.audio.ui("click")
 
     def _cycle(self, i, d=1):
         key, _, opts = SETTING_ROWS[i]
         st = self.app.profile.settings
+        if opts == SLIDER:
+            self._set_vol(i, st.get(key, 1.0) + 0.1 * d)
+            return
         vals = [v for v, _ in opts]
         cur = st.get(key, vals[0])
         idx = vals.index(cur) if cur in vals else 0
@@ -245,24 +271,45 @@ class SettingsScene(BackdropScene):
                 self._cycle(self.sel, -1)
             elif k in (pygame.K_RIGHT, pygame.K_d, pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
                 if self.sel < n:
-                    self._cycle(self.sel)
+                    if SETTING_ROWS[self.sel][2] != SLIDER or k in (pygame.K_RIGHT, pygame.K_d):
+                        self._cycle(self.sel)
                 elif k != pygame.K_RIGHT:
                     self.back()
             elif k in (pygame.K_ESCAPE, pygame.K_AC_BACK):
                 self.back()
+        rows = self._rows()
+        for kind, pid, x, y in inp.pointer_events:
+            if kind == "down":
+                for i, (key, _, opts) in enumerate(SETTING_ROWS):
+                    bar = self._bar(rows[i])
+                    if opts == SLIDER and bar.inflate(16, 18).collidepoint(x, y):
+                        self.sel = i
+                        self.drag = (i, pid)
+                        self._set_vol(i, (x - bar.x) / bar.w, save=False)
+            elif kind == "move" and self.drag and self.drag[1] == pid:
+                bar = self._bar(rows[self.drag[0]])
+                self._set_vol(self.drag[0], (x - bar.x) / bar.w, save=False)
+            elif kind == "up" and self.drag and self.drag[1] == pid:
+                self._set_vol(self.drag[0], self.app.profile.settings[SETTING_ROWS[self.drag[0]][0]])
+                self.drag = None
+            elif kind == "wheel":
+                for i, (key, _, opts) in enumerate(SETTING_ROWS):
+                    if opts == SLIDER and i == self.sel:
+                        self._cycle(i, 1 if x > 0 else -1)
         for x, y in inp.taps():
-            for i, r in enumerate(self._rows()):
+            for i, r in enumerate(rows):
                 if r.collidepoint(x, y):
                     self.sel = i
                     if i < n:
-                        self._cycle(i)
+                        if SETTING_ROWS[i][2] != SLIDER:
+                            self._cycle(i)
                     else:
                         self.back()
 
     def draw(self, surf):
         W = self.app.view.width
         self.draw_bg(surf)
-        hud.text(surf, "SETTINGS", (W // 2, 34), 40, C.ACCENT, anchor="center")
+        hud.text(surf, "SETTINGS", (W // 2, 32), 40, C.ACCENT, anchor="center")
         st = self.app.profile.settings
         rows = self._rows()
         for i, (key, label, opts) in enumerate(SETTING_ROWS):
@@ -272,6 +319,19 @@ class SettingsScene(BackdropScene):
             if on:
                 pygame.draw.rect(surf, C.ACCENT, r, 2, border_radius=6)
             hud.text(surf, label, (r.x + 12, r.centery), 22, anchor="midleft")
-            val = dict(opts).get(st.get(key), str(st.get(key)))
-            hud.text(surf, f"< {val} >", (r.right - 12, r.centery), 22, C.ACCENT, anchor="midright")
+            if opts == SLIDER:
+                v = float(st.get(key, 1.0))
+                bar = self._bar(r)
+                pygame.draw.rect(surf, (24, 22, 36), bar, border_radius=5)
+                if v > 0:
+                    pygame.draw.rect(surf, C.ACCENT, (bar.x, bar.y, max(6, int(bar.w * v)), bar.h),
+                                     border_radius=5)
+                kx = bar.x + int(bar.w * v)
+                pygame.draw.circle(surf, (20, 18, 30), (kx, bar.centery), 8)
+                pygame.draw.circle(surf, C.HUD_FG, (kx, bar.centery), 6)
+                txt = f"{int(round(v * 100))}%" if v > 0 else "Off"
+                hud.text(surf, txt, (r.right - 12, r.centery), 22, C.ACCENT, anchor="midright")
+            else:
+                val = dict(opts).get(st.get(key), str(st.get(key)))
+                hud.text(surf, f"< {val} >", (r.right - 12, r.centery), 22, C.ACCENT, anchor="midright")
         button(surf, rows[-1], "BACK", self.sel == len(SETTING_ROWS))

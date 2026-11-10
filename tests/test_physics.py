@@ -134,3 +134,61 @@ def test_static_tracks_solvable_by_every_vehicle():
 def test_determinism():
     a = validate(static_track()); b = validate(static_track())
     assert a == b
+
+
+# --- one-button throttle (setting "throttle_mode" = "one") -----------------------
+def one_button_bike():
+    b = Bike(flat(400))
+    b.one_button = True
+    return b
+
+
+def test_one_button_heats_past_A_ceiling_into_boost_then_super():
+    b = one_button_bike()
+    hold = Controls(a=True)
+    run(b, hold, 120)
+    assert b.temp < C.TEMP_STABLE_A and b.boost_level == 0
+    while b.temp < C.TEMP_STABLE_A + 0.5:
+        run(b, hold, 1)
+    assert b.boost_level == 1                      # automatic boost past the old A ceiling
+    run(b, hold, 60)
+    assert C.SPEED_MAX_A < b.speed <= C.SPEED_MAX_B
+    while b.temp < C.ONE_SUPER_AT + 0.1:
+        run(b, hold, 1)
+    run(b, hold, 1)
+    assert b.boost_level == 2 and b.state == "ride"
+    run(b, hold, 20)
+    assert b.speed > C.SPEED_MAX_B                 # super boost beats normal turbo
+
+
+def test_one_button_explodes_past_red_window_and_recovers_cold():
+    b = one_button_bike()
+    evs = []
+    while b.state == "ride":
+        evs += b.step(Controls(a=True))
+    assert ("explode",) in [e[:1] for e in evs]
+    assert b.state == "crash" and b.crash_reason == "explode" and b.temp == 0
+    assert b.crash_total == C.CRASH_TICKS + C.EXPLODE_EXTRA_TICKS   # longer than a crash
+    evs = run(b, Controls(), b.crash_total + 2)
+    kinds = [e[0] for e in evs]
+    assert "bike_drop" in kinds and "recovered" in kinds and b.state == "ride"
+
+
+def test_one_button_letting_go_cools_and_crash_zeroes_heat():
+    b = one_button_bike()
+    run(b, Controls(a=True), 300)
+    hot = b.temp
+    run(b, Controls(), C.THROTTLE_GRACE_TICKS + 60)
+    assert b.temp < hot
+    b.temp = 20.0
+    b._crash([], "nose")
+    assert b.temp == 0.0
+
+
+def test_classic_mode_unchanged_by_one_button_rules():
+    b = Bike(flat(400))
+    run(b, Controls(a=True), 600)
+    assert abs(b.temp - C.TEMP_STABLE_A) < 1e-6 and b.boost_level == 0
+    b.temp = 20.0
+    b._crash([], "nose")
+    assert b.temp == 20.0

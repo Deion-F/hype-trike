@@ -12,6 +12,7 @@ from array import array
 import pygame
 
 SR = 22050
+MUSIC_BASE_VOL = 0.36     # music Sound volume at 100% on the settings slider
 NOTE = {n: i for i, n in enumerate(["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"])}
 
 
@@ -93,6 +94,8 @@ class Audio:
         self.enabled = False
         self.sound_on = True
         self.music_on = True
+        self.sfx_vol = 1.0
+        self.music_vol = 1.0
         self.sounds = {}
         self.engine_loops = []
         self._engine_bucket = None
@@ -119,11 +122,16 @@ class Audio:
         except Exception:
             self.enabled = False
 
-    def configure(self, sound, music):
-        self.sound_on = bool(sound)
-        self.music_on = bool(music)
+    def configure(self, sound, music, sfx_vol=1.0, music_vol=1.0):
+        self.sfx_vol = max(0.0, min(1.0, float(sfx_vol)))
+        self.music_vol = max(0.0, min(1.0, float(music_vol)))
+        self.sound_on = bool(sound) and self.sfx_vol > 0
+        self.music_on = bool(music) and self.music_vol > 0
         if not self.enabled:
             return
+        self.ch_engine.set_volume(self.sfx_vol)
+        if self._music is not None:
+            self._music.set_volume(MUSIC_BASE_VOL * self.music_vol)
         if not self.sound_on:
             self.stop_engine()
         if not self.music_on:
@@ -168,6 +176,9 @@ class Audio:
             "upgrade": S(seq(["G4", "C5", "E5", "G5", "C6"], 0.05, wave="square", vol=0.2, duty=0.25)),
             "buy": S(seq(["E5", "B5"], 0.07, wave="square", vol=0.22, duty=0.25)),
             "deny": S(osc(150, 0.16, "square", 0.22, 0.5, f_end=110)),
+            "explode": S(mix(noise(1.1, 0.6, 5000, rate_end=250), osc(160, 0.9, "square", 0.25, f_end=30),
+                             osc(70, 0.7, "sine", 0.45, f_end=25))),
+            "bike_drop": S(mix(noise(0.12, 0.35, 2500), osc(110, 0.12, "tri", 0.4, f_end=55))),
         }
         # engine: pulse loops at rising pitch; whole cycles so loops don't click
         self.engine_loops = []
@@ -189,7 +200,9 @@ class Audio:
             return
         s = self.sounds.get(kind)
         if s:
-            s.play()
+            ch = s.play()
+            if ch:     # play() resets the channel volume, so apply the slider each time
+                ch.set_volume(self.sfx_vol)
 
     def ui(self, kind="click"):
         self.event(kind)
@@ -201,12 +214,13 @@ class Audio:
             self.stop_engine()
             return
         b = int(bike.speed / 4.5)
-        if ctl.b and bike.state == "ride":
-            b += 1
+        if bike.state == "ride":
+            b += getattr(bike, "boost_level", 1 if ctl.b else 0)
         b = max(0, min(len(self.engine_loops) - 1, b))
         if b != self._engine_bucket or not self.ch_engine.get_busy():
             self._engine_bucket = b
             self.ch_engine.play(self.engine_loops[b], loops=-1)
+            self.ch_engine.set_volume(self.sfx_vol)
 
     def stop_engine(self):
         if self.enabled:
@@ -234,7 +248,7 @@ class Audio:
                 next(self._music_gen)
             except StopIteration as done:
                 self._music = done.value
-                self._music.set_volume(0.45)
+                self._music.set_volume(MUSIC_BASE_VOL * self.music_vol)
             return
         if self._want_music and self.music_on and not self._music_playing:
             self.ch_music.play(self._music, loops=-1, fade_ms=600)

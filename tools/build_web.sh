@@ -14,4 +14,8 @@ JSON
 if ! grep -q 'rel="manifest"' "$W/index.html"; then
   sed -i '0,/<head>/s//<head>\n<link rel="manifest" href="manifest.json">\n<meta name="mobile-web-app-capable" content="yes">\n<meta name="screen-orientation" content="landscape">/' "$W/index.html"
 fi
+# Right mouse button is turbo: don't let the browser's context menu steal it.
+if ! grep -q 'contextmenu' "$W/index.html"; then
+  sed -i '0,/<head>/s//<head>\n<script>document.addEventListener("contextmenu", e => e.preventDefault());<\/script>/' "$W/index.html"
+fi
 echo "Built: $(pwd)/hypetrike/build/web"
