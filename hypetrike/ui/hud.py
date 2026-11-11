@@ -95,7 +95,7 @@ def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
     text(surf, s, (x, y - 14), 16, c)
 
 
-def race_hud(surf, race, width, ticks, extra_left=None, best=None):
+def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=True):
     b = race.bike
     panel(surf, (6, 6, 150, 40))
     lap = min(race.laps_done + 1, race.track.laps)
@@ -115,7 +115,9 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None):
         for i, line in enumerate(extra_left):
             text(surf, line, (12, 52 + i * 14), 16)
     gx = width // 2 - 75
-    if getattr(b, "one_button", False):
+    if not heat_bar:
+        pass                    # heat shown on the rider instead (setting "heat_gauge")
+    elif getattr(b, "one_button", False):
         lvl = b.boost_level if b.state == "ride" else 0
         heat_gauge_one(surf, b.temp, lvl, gx, C.VIEW_H - 18, ticks=ticks)
     else:

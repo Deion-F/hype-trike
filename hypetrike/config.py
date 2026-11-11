@@ -70,6 +70,12 @@ FX_CAM_LEAD = 12            # px the camera runs ahead at full boost
 FX_CAM_LEAD_SUPER = 12      # ... and on top of that at full super boost
 FX_SHAKE = 1.5              # px of horizontal shake at full super boost
 
+# Heat arc worn by the rider (setting "heat_gauge"): centre offset from the
+# bike's ground contact point, and inner radius, in logical px.
+HEAT_ARC_DX = -2
+HEAT_ARC_DY = -37
+HEAT_ARC_R = 17
+
 # --- air / landing ---------------------------------------------------------------
 GRAVITY = 0.20              # px / tick^2
 PITCH_RATE = 2.2            # deg / tick while holding tilt in the air

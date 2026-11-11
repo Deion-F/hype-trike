@@ -92,7 +92,7 @@ DEFAULTS = {
     "settings": {"sound": True, "music": True, "smooth": False,
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
                  "touch_ui": "auto", "mouse_steer": "angle", "throttle_mode": "one",
-                 "mouse_wheelie": "ramps",
+                 "mouse_wheelie": "ramps", "heat_gauge": "both",
                  "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 2},
     "tracks": {},
     "best_laps": {},

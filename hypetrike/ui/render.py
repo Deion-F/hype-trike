@@ -426,6 +426,48 @@ class WorldRenderer:
             self.particles.emit(wx + bx * 6, py + by * 6, bx * self._rng.uniform(1, 2.5) - bike.vx * 0.2,
                                 by * 2 + self._rng.uniform(-0.6, 0.3), self._rng.randint(6, 12), col)
 
+    HEAT_ARC_SEGS = 12
+
+    def draw_heat_arc(self, surf, bike, cam_x, t):
+        """Heat gauge worn by the rider: a segmented arc around the helmet that
+        lights up left to right as heat builds. Segments take their zone colour
+        (normal / boost / red window); the unlit rest shows dimmed, so the zone
+        edges are always visible. The red window flashes while you're in it."""
+        if bike.state != "ride":
+            return
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        cx, cy = sx + C.HEAT_ARC_DX, sy + C.HEAT_ARC_DY
+        if bike.one_button:
+            lo, boost_at, red_at = 0.0, C.ONE_BOOST_AT, C.ONE_SUPER_AT
+        else:
+            lo, boost_at, red_at = C.TEMP_START, C.TEMP_STABLE_A, 27.0
+        hi = C.TEMP_OVERHEAT
+        n = self.HEAT_ARC_SEGS
+        a0, a1 = math.radians(172), math.radians(8)          # left, over the helmet, right
+        r0, r1 = C.HEAT_ARC_R, C.HEAT_ARC_R + 4
+        red_now = bike.temp >= red_at
+        flash = red_now and (t // 4) % 2 == 0
+        for i in range(n):
+            v = lo + (hi - lo) * i / n                       # heat where this segment starts
+            mid = lo + (hi - lo) * (i + 0.5) / n             # zone colour from its middle
+            if mid >= red_at:
+                col = (255, 235, 220) if flash else (232, 40, 40)
+            elif mid >= boost_at:
+                col = (255, 150, 40)
+            else:
+                col = (120, 230, 110)
+            if bike.temp <= v:                               # unlit: dim zone tint
+                col = tuple(int(c * 0.32) + 18 for c in col)
+            g = 0.12                                          # gap between segments (fraction)
+            s0 = a0 + (a1 - a0) * (i + g) / n
+            s1 = a0 + (a1 - a0) * (i + 1 - g) / n
+            pts = [(cx + math.cos(s0) * r0, cy - math.sin(s0) * r0),
+                   (cx + math.cos(s0) * r1, cy - math.sin(s0) * r1),
+                   (cx + math.cos(s1) * r1, cy - math.sin(s1) * r1),
+                   (cx + math.cos(s1) * r0, cy - math.sin(s1) * r0)]
+            pygame.draw.polygon(surf, (20, 16, 28), pts, 3)  # dark outline for contrast
+            pygame.draw.polygon(surf, col, pts)
+
     def draw_speed_lines(self, surf, t, k, hot=False):
         """Screen-wide streaks in the sky and over the ground while boosting.
         k = 0..1 strength (more, longer, faster lines); hot = super boost."""

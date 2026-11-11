@@ -243,6 +243,7 @@ SETTING_ROWS = [
     ("touch_ui", "Touch buttons", [("auto", "Auto"), ("on", "Always"), ("off", "Hidden")]),
     ("throttle_mode", "Throttle", [("classic", "Throttle + boost"), ("one", "One button")]),
     ("mouse_steer", "Mouse lean", [("angle", "Aim angle"), ("hold", "Hold lean"), (False, "Off")]),
+    ("heat_gauge", "Heat gauge", [("both", "Rider + bar"), ("bike", "On rider"), ("bar", "Bottom bar")]),
     ("mouse_wheelie", "Mouse wheelie", [("ramps", "Ramps only"), ("anywhere", "Anywhere")]),
     ("sfx_vol", "Sound effects", SLIDER),
     ("music_vol", "Music", SLIDER),

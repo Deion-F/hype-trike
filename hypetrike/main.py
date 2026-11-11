@@ -162,6 +162,12 @@ async def main():
     acc = 0.0
     while app.running:
         dt = clock.tick(C.FPS if not WEB else 0)
+        # Snap near-one-step frames to exactly one step. clock.tick() works in
+        # whole ms (16/17) and jitters, which otherwise makes some frames run 0
+        # updates and others 2: everything visibly stutters, the scrolling
+        # backdrop most of all.
+        if abs(dt - step_ms) < 3.0:
+            dt = step_ms
         acc += min(dt, 100)
         app.handle_events()
         app.scene.frame(app.input)

@@ -277,3 +277,18 @@ def test_backdrop_scrolls_left_as_the_rider_moves_forward():
         rd.draw_backdrop(s, 0, scroll)
         return [x for x in range(640) if s.get_at((x, 20))[:3] == (255, 0, 0)][0]
     assert marker_x(100) < marker_x(0)                   # moved left, not right
+
+
+def test_heat_arc_draws_in_both_throttle_modes():
+    import pygame
+    if not pygame.display.get_init():
+        pygame.display.init(); pygame.display.set_mode((10, 10))
+    from ui.render import WorldRenderer
+    rd = WorldRenderer(640)
+    for one in (True, False):
+        b = Bike(flat(50)); b.one_button = one; b.temp = 30.0
+        s = pygame.Surface((640, 360)); s.fill((0, 0, 0))
+        rd.draw_heat_arc(s, b, b.x, 0)
+        sx, sy = rd.bike_screen_pos(b, b.x)
+        top = (int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 2))
+        assert s.get_at(top)[:3] != (0, 0, 0)           # the arc's top segment is drawn

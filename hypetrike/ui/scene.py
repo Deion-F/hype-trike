@@ -236,6 +236,8 @@ class RaceScene(Scene):
             elif me and self.boost_k > 0 and bk.state == "ride":
                 rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
             rd.draw_bike(surf, bk, cam, liv, frame, me)
+            if me and self.app.profile.settings.get("heat_gauge", "both") != "bar":
+                rd.draw_heat_arc(surf, bk, cam, self.ticks)
         if self.boost_k > 0 and b.state == "ride":
             rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
         rd.particles.draw(surf, cam)
@@ -246,7 +248,8 @@ class RaceScene(Scene):
         extra = list(self.info_lines)
         if self.target:
             extra.append(self.target.describe())
-        hud.race_hud(surf, self.race, W, self.ticks, extra, self.best_lap)
+        hud.race_hud(surf, self.race, W, self.ticks, extra, self.best_lap,
+                     heat_bar=self.app.profile.settings.get("heat_gauge", "both") != "bike")
         if self.title and self.race.countdown > 0:
             hud.text(surf, self.title, (W // 2, 70), 30, C.HUD_FG, anchor="center")
         self.app.input.draw_touch(surf, hud.font)
