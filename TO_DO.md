@@ -6,7 +6,11 @@
 ## To discuss later: mouse controls (from recording review, 2026-11-10)
 
 2. **Re-anchoring without losing throttle.** Moving the anchor means letting go of both buttons, which costs speed (in the third recording, speed sat at 0 for ~2 s around 0:35 while repositioning). Trying first: a 0.6 s throttle grace period (speed holds briefly after release). Idea if that's not enough: middle-click / scroll-wheel click drops a new anchor while throttle stays held. Concern: keep the controls simple.
-3. **Accidental wheelies in whoops.** A ground lean held through whoops is very costly (sim at speed 46: no lean = 1 bounce, 2.2 s; wheelie = 11 bounces, 7.9 s; lean forward = 13 bounces, 8.3 s). With the mouse it's easy to sit slightly behind the anchor without meaning to. Decision so far: keep mouse wheelies (small edge off ramps, a learnable skill, looks cool). Possible softer fix: make the ground-wheelie zone need a slightly bigger offset than the air lean.
+3. ~~**Accidental wheelies in whoops.**~~ Done 2026-11-10: new "Mouse wheelie" setting, default "Ramps only" (flat-ground side movement slides home; lean switches on at ramps).
 4. **Starts.** Throttle started after GO in the recording (1st to 4th within 0.5 s). Holding the left button through the countdown also sets the anchor early. Maybe hint at this on the heat intro or during the countdown.
-5. **Coolant pads in one-button mode.** Pads still reset heat to idle (8), which in one-button mode throws away built-up boost, so pads become something to avoid rather than seek out. Options: pads only pull heat down out of the red window, pads drop heat to just under the super window, or pads become a small instant speed bump instead.
+5. ~~**Coolant pads in one-button mode.**~~ Done 2026-11-10: pads are heat pads in one-button mode.
 6. **Crash resets heat to 0 only in one-button mode.** In throttle + boost mode heat is purely bad, so zeroing it on a crash would be a reward. Revisit if the modes should share this rule.
+
+## Rival difficulty (2026-11-10)
+
+7. **Test: higher-tier upgrades push rival difficulty up faster.** Rival difficulty is now `rival_level = round / 5` (0 → 1 over a run; see `rival_setup` in `hypetrike/race.py`). Idea: each higher-tier upgrade the player takes adds a little to the level for the rest of the run, so a strong build meets stronger rivals sooner. Needs upgrade tiers first (upgrades currently have categories and stack caps, no tiers).

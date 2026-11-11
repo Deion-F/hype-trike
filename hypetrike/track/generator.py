@@ -46,7 +46,8 @@ LIBRARY = [
     Segment("bump", "..s..", 1, heat_discount=2),
     Segment("double bump", ".s...s..", 1, heat_discount=4),
     Segment("big air", "..L....", 1, runway=2, heat_discount=4),
-    Segment("whoops", "..wwww..", 2),
+    # Whoops (bumpy runs) are hard: none on the first map, and rare after that.
+    Segment("whoops", "..wwww..", 2, weight=0.45, min_depth=1),
     Segment("mud patch", "......", 1, hazards=((2, MUD, 1, 2), (3, MUD, 1, 2))),
     Segment("barrier", "......", 2, hazards=((3, DEBRIS, 1, 2),)),
     # --- medium ----------------------------------------------------------------
@@ -54,7 +55,7 @@ LIBRARY = [
     Segment("pit jump", "..L.g....", 2, runway=3, heat_discount=4, min_depth=0),
     Segment("triple", ".s.s.s...", 3, heat_discount=6, min_depth=1),
     Segment("tabletop pair", "..LL.....", 3, runway=2, heat_discount=5, min_depth=1),
-    Segment("long whoops", ".wwwwwwww..", 3, min_depth=1),
+    Segment("long whoops", ".wwwwwwww..", 3, weight=0.35, min_depth=2),
     Segment("slalom", "........", 3, hazards=((1, DEBRIS, 1, 2), (4, DEBRIS, 1, 2), (7, DEBRIS, 1, 2)),
             min_depth=1),
     Segment("landing zone", "..L......", 3, runway=2, heat_discount=4,
@@ -62,7 +63,7 @@ LIBRARY = [
     # --- hard --------------------------------------------------------------------
     Segment("canyon", "..Lgg.....", 4, runway=4, heat_discount=5, min_depth=2),
     Segment("wide canyon", "..L.gg.....", 4, runway=5, heat_discount=5, min_depth=3),
-    Segment("rhythm gap", ".wwww.L.g....", 4, runway=2, heat_discount=4, min_depth=2),
+    Segment("rhythm gap", ".wwww.L.g....", 4, runway=2, heat_discount=4, min_depth=2, weight=0.5),
     Segment("gauntlet", ".s..L.g...s..", 5, runway=4, heat_discount=8,
             hazards=((3, MUD, 1, 1), (9, DEBRIS, 1, 2)), min_depth=3),
     Segment("mud jump", "....L.g....", 4, runway=2, heat_discount=4,

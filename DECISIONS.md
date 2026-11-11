@@ -106,5 +106,7 @@ Status key: ✅ confirmed · ⏳ pending (asked, no answer yet) · 📝 note (fa
 
 ## Change history
 
+- 2026-11-10: One-button throttle is now the default (old saves migrate once via `settings_v`). In that mode heat drives speed: 0–9 ramps to A top speed, 9–27 is the boost band, and 27–32 is super boost. Letting go cools the engine, and speed falls with it. Pads are heat pads (+5 heat, can blow you up in the red), rough landings cost 6 heat, and the exhaust flame shows the heat level. Mouse: sticky anchor, hold still 0.5 s to move home. Air lean zones are tighter than ground ones (10 px per 12° step). The anchor moves to the cursor on every landing and after a crash. Rivals scale with the run round (`rival_level` 0→1: speed, turbo, landing precision, botched jumps, missed hazards); whoops are rarer and absent at depth 0. Every run heat is a race vs 3 rivals with a placing target (modifier heats keep their modifier); solo par runs moved to a new TIME TRIAL mode. Rival turbo is capped at the player's turbo speed. New "Mouse wheelie" setting (default ramps only). Boosting eases in a visual "speed feel": faster backdrop parallax, camera lead, speed lines, super-boost shake (FX_* in config.py).
+
 - 2026-11-09: All §9 questions (Q1–Q13) and the §2 stack choice confirmed. Ready for Milestone 1.
 - 2026-11-09: File created. §12 setup steps 1–2 done; step 3 done after the user allowed it.

@@ -19,26 +19,32 @@ def _shade(c, k):
 
 class Particles:
     def __init__(self):
-        self.items = []   # [x, y, vx, vy, life, max_life, color, size] in world coords (x=track px)
+        # [x, y, vx, vy, life, max_life, color, size, gravity, grow] in world coords (x=track px)
+        self.items = []
 
-    def emit(self, x, y, vx, vy, life, color, size=2):
+    def emit(self, x, y, vx, vy, life, color, size=2, gravity=0.05, grow=0.0):
+        """grow > 0: a puff that swells by that many px over its life (smoke)."""
         if len(self.items) < 220:
-            self.items.append([x, y, vx, vy, life, life, color, size])
+            self.items.append([x, y, vx, vy, life, life, color, size, gravity, grow])
 
     def update(self):
         keep = []
         for p in self.items:
             p[0] += p[2]
             p[1] += p[3]
-            p[3] += 0.05
+            p[3] += p[8]
             p[4] -= 1
             if p[4] > 0:
                 keep.append(p)
         self.items = keep
 
     def draw(self, surf, cam_x):
-        for x, y, _, _, life, ml, col, size in self.items:
+        for x, y, _, _, life, ml, col, size, _, grow in self.items:
             sx = C.BIKE_SCREEN_X + (x - cam_x)
+            if grow:
+                s = int(size + grow * (1 - life / ml))
+                surf.fill(col, (int(sx - s / 2), int(y - s / 2), s, s))
+                continue
             s = size if life > ml * 0.4 else max(1, size - 1)
             surf.fill(col, (int(sx), int(y), s, s))
 
@@ -61,10 +67,13 @@ class WorldRenderer:
         self.mat_col = {DIRT: th["dirt"], GRASS: th["grass"], SAND: th["sand"]}
 
     # ------------------------------------------------------------------------
-    def draw_backdrop(self, surf, cam_x):
+    def draw_backdrop(self, surf, cam_x, scroll=None):
+        """scroll: parallax position for the far/mid layers (defaults to cam_x).
+        The race scene runs it faster than the camera while boosting."""
         W = self.far.get_width()
+        scroll = cam_x if scroll is None else scroll
         for layer, k in ((self.far, 0.08), (self.mid, 0.4)):
-            off = -int(cam_x * k) % (W // 2)
+            off = -int(scroll * k) % (W // 2)
             surf.blit(layer, (-off, 0))
             if W - off < self.width:
                 surf.blit(layer, (W - off, 0))
@@ -77,9 +86,10 @@ class WorldRenderer:
 
     def draw_track(self, surf, track, cam_x, editor_cursor=None):
         """Blit pre-rendered columns (each column is rendered once per track)."""
-        if getattr(self, "_cache_track", None) is not track or self._cache_theme != self.theme_name:
+        key = (self.theme_name, getattr(self, "heat_pads", False))
+        if getattr(self, "_cache_track", None) is not track or self._cache_theme != key:
             self._cache_track = track
-            self._cache_theme = self.theme_name
+            self._cache_theme = key
             self._col_cache = {}
         left = cam_x - C.BIKE_SCREEN_X
         first = int(math.floor(left / C.TILE_W))
@@ -195,6 +205,13 @@ class WorldRenderer:
                 pygame.draw.ellipse(surf, (88, 58, 40), (sx0 + 8, cy - 6, 64, 13))
                 pygame.draw.ellipse(surf, (110, 76, 52), (sx0 + 16, cy - 4, 40, 7))
                 surf.fill((70, 46, 30), (int(sx0 + 30), int(cy - 1), 6, 2))
+            elif s == COOLANT and getattr(self, "heat_pads", False):
+                # one-button mode: a heat pad (orange plate, flame chevrons)
+                pygame.draw.rect(surf, (150, 46, 20), (sx0 + 12, cy - 6, 56, 13), border_radius=3)
+                pygame.draw.rect(surf, (255, 120, 40), (sx0 + 12, cy - 6, 56, 13), 1, border_radius=3)
+                for i in range(3):
+                    x = sx0 + 20 + i * 15
+                    pygame.draw.polygon(surf, (255, 200, 60), [(x, cy - 4), (x + 8, cy), (x, cy + 4), (x + 3, cy)])
             elif s == COOLANT:
                 pygame.draw.rect(surf, (30, 90, 140), (sx0 + 12, cy - 6, 56, 13), border_radius=3)
                 for i in range(3):
@@ -351,8 +368,42 @@ class WorldRenderer:
             pts = [(px + nx * w, py + ny * w), (px + bx * L, py + by * L), (px - nx * w, py - ny * w)]
             pygame.draw.polygon(surf, col, pts)
 
-    def draw_boost_wind(self, surf, bike, cam_x, t, k=1.0):
-        """Speed streaks rushing past the rider (drawn over the bikes)."""
+    def draw_heat_flame(self, surf, bike, cam_x, t):
+        """One-button mode: the exhaust flame is the heat gauge. It grows with heat
+        and shifts from yellow-orange (cold) through orange (boost) to deep red
+        (super / about to blow), flickering harder in the red window."""
+        h = max(0.0, min(1.0, bike.temp / C.TEMP_OVERHEAT))
+        if h < 0.03:
+            return
+        px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
+        nx, ny = -by, bx
+        red = bike.temp >= C.ONE_SUPER_AT
+        flick = (t * 7919) % 5 * (2 if red else 1)
+        # Colour steps at the band edges so "boosting or not" reads at a glance:
+        # (outer, mid, core) at the start and end of each band, blended within it.
+        T = bike.temp
+        if T < C.ONE_BOOST_AT:          # cold: small yellow flame
+            k, a, b = T / C.ONE_BOOST_AT, ((255, 215, 70), (255, 240, 150), (255, 255, 235)), \
+                ((255, 185, 50), (255, 230, 120), (255, 255, 230))
+        elif not red:                    # boost band: orange, deepening
+            k = (T - C.ONE_BOOST_AT) / (C.ONE_SUPER_AT - C.ONE_BOOST_AT)
+            a, b = ((255, 130, 25), (255, 205, 70), (255, 250, 210)), \
+                ((240, 70, 20), (255, 150, 40), (255, 225, 160))
+        else:                            # red window: deep red
+            k, a, b = 1.0, ((200, 15, 15),) * 3, ((200, 15, 15), (255, 60, 30), (255, 170, 120))
+        cols = [tuple(int(a[j][i] + (b[j][i] - a[j][i]) * k) for i in range(3)) for j in range(3)]
+        layers = ((4 + 36 * h + flick * 1.5, 3 + 9 * h, cols[0]),
+                  (3 + 25 * h + flick, 2 + 6 * h, cols[1]),
+                  (2 + 12 * h + flick * 0.5, 1 + 3 * h, cols[2]))
+        for length, width, col in layers:
+            w = width / 2
+            pts = [(px + nx * w, py + ny * w), (px + bx * length, py + by * length),
+                   (px - nx * w, py - ny * w)]
+            pygame.draw.polygon(surf, col, pts)
+
+    def draw_boost_wind(self, surf, bike, cam_x, t, k=1.0, hot=False):
+        """Speed streaks rushing past the rider (drawn over the bikes).
+        hot: super boost, about to blow - the streaks burn orange-red."""
         sx, sy = self.bike_screen_pos(bike, cam_x)
         w, h = 220, 56
         layer = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -364,7 +415,8 @@ class WorldRenderer:
             a = int((170 + (i % 2) * 70) * k)
             th = 1 + (i % 3 == 0)
             pygame.draw.line(layer, (40, 30, 60, a // 2), (x, y + th), (x + ln, y + th), 1)
-            pygame.draw.line(layer, (255, 255, 255, a), (x, y), (x + ln, y), th)
+            col = ((255, 70, 35) if i % 2 else (255, 150, 50)) if hot else (255, 255, 255)
+            pygame.draw.line(layer, (*col, a), (x, y), (x + ln, y), th)
         surf.blit(layer, (sx - w + 70, sy - h + 6))
 
     def emit_boost_sparks(self, bike, cam_x):
@@ -373,6 +425,41 @@ class WorldRenderer:
         for col in ((255, 200, 70), (255, 130, 40)):
             self.particles.emit(wx + bx * 6, py + by * 6, bx * self._rng.uniform(1, 2.5) - bike.vx * 0.2,
                                 by * 2 + self._rng.uniform(-0.6, 0.3), self._rng.randint(6, 12), col)
+
+    def draw_speed_lines(self, surf, t, k, hot=False):
+        """Screen-wide streaks in the sky and over the ground while boosting.
+        k = 0..1 strength (more, longer, faster lines); hot = super boost."""
+        if k <= 0.02:
+            return
+        W, H = surf.get_size()
+        layer = pygame.Surface((W, H), pygame.SRCALPHA)
+        n = int(6 + 16 * k)
+        bands = ((22, C.LANE_BASE_Y - 40), (C.LANE_BASE_Y + C.LANES * C.LANE_SPACING + 6, H - 34))
+        for i in range(n):
+            y0, y1 = bands[i % 2]
+            y = y0 + (i * 53 + 17) % max(1, y1 - y0)
+            ln = int((30 + (i % 4) * 22) * (0.6 + 0.8 * k))
+            speed = (18 + (i % 3) * 7) * (0.7 + k)
+            x = W - ((t * speed + i * 97) % (W + ln))
+            a = int((60 + (i % 3) * 40) * k)
+            col = ((255, 120, 50) if i % 2 else (255, 200, 90)) if hot else (255, 255, 255)
+            pygame.draw.line(layer, (*col, a), (x, y), (x + ln, y), 1 + (i % 5 == 0))
+        surf.blit(layer, (0, 0))
+
+    def emit_smoke(self, bike, cam_x, danger=0.0):
+        """Dark smoke pouring off the engine in super boost. danger 0..1 (closer
+        to the explosion) makes it thicker and darker."""
+        px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        wx0 = bike.x - (sx - px)                       # exhaust, in world x
+        for _ in range(1 + int(danger * 2)):
+            # from the exhaust and from the engine under the rider
+            ox, oy = (wx0, py) if self._rng.random() < 0.5 else (bike.x - 2, sy - 12)
+            g = int(120 - 70 * danger + self._rng.uniform(-14, 14))
+            self.particles.emit(ox + self._rng.uniform(-3, 3), oy + self._rng.uniform(-2, 2),
+                                -bike.vx * 0.55 + self._rng.uniform(-0.4, 0.4),
+                                self._rng.uniform(-1.1, -0.5), self._rng.randint(22, 38),
+                                (g, g - 6, g - 4), size=3, gravity=-0.01, grow=7 + 5 * danger)
 
     def emit_dust(self, bike, cam_x, turbo=False):
         if bike.airborne or bike.state != "ride" or bike.speed < 6:

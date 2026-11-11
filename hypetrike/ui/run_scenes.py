@@ -81,7 +81,7 @@ class HeatIntroScene(BackdropScene):
             else:
                 self.app.set_scene(RunOverScene(self.app, run, abandoned=bool(result and result.get("forfeit"))))
         self.app.set_scene(RaceScene(self.app, h.track, stats, run.livery, rivals=h.rivals,
-                                     rival_skill=h.rival_skill, seed=h.seed, on_done=done,
+                                     rival_level=h.rival_level, seed=h.seed, on_done=done,
                                      title=f"Heat {h.index + 1}: {h.track.name}",
                                      info_lines=info, target=h.target))
 

@@ -164,6 +164,7 @@ class Audio:
             "crash": S(mix(noise(0.55, 0.5, 6000, rate_end=500), osc(300, 0.4, "square", 0.2, f_end=50))),
             "forgiven": S(seq(["C5", "E5", "G5"], 0.06, wave="tri", vol=0.4)),
             "coolant": S(mix(noise(0.25, 0.18, 9000), osc(400, 0.25, "sine", 0.25, f_end=1200))),
+            "heatpad": S(mix(noise(0.3, 0.22, 4000, rate_end=9000), osc(180, 0.3, "saw", 0.22, f_end=700))),
             "overheat": S(mix(seq(["A5", None, "A5", None, "A5"], 0.09, wave="square", vol=0.2),
                               noise(0.6, 0.15, 12000))),
             "cooled": S(osc(300, 0.2, "tri", 0.3, f_end=600)),

@@ -91,8 +91,9 @@ DEFAULTS = {
     "selected": {"vehicle": "dirt", "livery": "flame", "start_upgrade": None},
     "settings": {"sound": True, "music": True, "smooth": False,
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
-                 "touch_ui": "auto", "mouse_steer": "angle", "throttle_mode": "classic",
-                 "sfx_vol": 1.0, "music_vol": 1.0},
+                 "touch_ui": "auto", "mouse_steer": "angle", "throttle_mode": "one",
+                 "mouse_wheelie": "ramps",
+                 "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 2},
     "tracks": {},
     "best_laps": {},
 }
@@ -116,6 +117,11 @@ class Profile:
                 st[flag] = True
         if st.get("mouse_steer") is True:      # old On/Off setting
             st["mouse_steer"] = "angle"
+        # v2: one-button throttle became the default; move older saves over once.
+        saved_st = (data or {}).get("settings") or {}
+        if saved_st and saved_st.get("settings_v", 1) < 2:
+            st["throttle_mode"] = "one"
+        st["settings_v"] = 2
         self.data = d
 
     # convenience accessors

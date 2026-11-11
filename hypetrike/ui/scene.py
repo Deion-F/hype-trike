@@ -29,7 +29,7 @@ class RaceScene(Scene):
     """Plays one race. on_done(result_dict) is called when the player leaves."""
 
     def __init__(self, app, track, stats, livery="flame", rivals=0, on_done=None,
-                 title="", info_lines=None, rival_skill=0.85, seed=0,
+                 title="", info_lines=None, rival_level=0.5, seed=0,
                  target=None):
         super().__init__(app)
         self.track = track
@@ -39,9 +39,10 @@ class RaceScene(Scene):
         self.title = title
         self.info_lines = info_lines or []
         self.target = target
-        self.race = Race(track, stats, rivals=rivals, rival_skill=rival_skill, seed=seed)
+        self.race = Race(track, stats, rivals=rivals, rival_level=rival_level, seed=seed)
         self.race.bike.one_button = app.profile.settings.get("throttle_mode") == "one"
         self.renderer = WorldRenderer(app.view.width, track.theme)
+        self.renderer.heat_pads = self.race.bike.one_button   # pads draw as heat pads
         self.popups = hud.Popups()
         self.paused = False
         self.ticks = 0
@@ -55,6 +56,9 @@ class RaceScene(Scene):
         self._cursor_visible = True
         self.boost_k = 0.0          # 0..1 fade of the turbo flame / wind effect
         self.boost_lvl = 1          # 1 boost, 2 super (last level seen, kept while fading)
+        self.fx_boost = 0.0         # 0..1 eased "speed feel" from boosting (any level)
+        self.fx_super = 0.0         # 0..1 eased extra feel from super boost
+        self.bg_scroll = 0.0        # backdrop parallax position (runs ahead while boosting)
         app.audio.music(None)
 
     def on_resize(self):
@@ -100,11 +104,17 @@ class RaceScene(Scene):
         sx, sy = self.renderer.bike_screen_pos(b, b.x)
         for e in ev:
             k = e[0]
+            if k in ("perfect", "land", "rough"):
+                # Every real landing (not micro-hops): home moves to the cursor, so
+                # the air lean the hand was holding becomes the new neutral.
+                self.app.input.recenter_anchor()
             if k == "perfect":
                 self.popups.add("PERFECT!", C.ACCENT, sx, sy - 40)
                 self.renderer.emit_burst(b, (255, 230, 120), 10, 1.5)
             elif k == "rough":
-                self.popups.add("ROUGH", (255, 160, 90), sx, sy - 40)
+                self.popups.add("ROUGH  -HEAT" if b.one_button else "ROUGH", (255, 160, 90), sx, sy - 40)
+                if b.one_button:
+                    self.renderer.emit_burst(b, (200, 200, 210), 10, 1.4)     # heat vented as steam
             elif k == "bounce":
                 self.popups.add("bump", (230, 230, 230), sx, sy - 34, 25)
             elif k == "crash":
@@ -117,6 +127,8 @@ class RaceScene(Scene):
                 self.renderer.emit_burst(b, (255, 90, 30), 24, 5)         # fire
                 self.renderer.emit_burst(b, (255, 220, 90), 16, 6.5)      # sparks
                 self.renderer.emit_burst(b, (70, 64, 70), 18, 3)          # smoke / debris
+            elif k == "recovered":
+                self.app.input.recenter_anchor()     # fresh start: home is where the cursor is
             elif k == "bike_drop":
                 self.renderer.emit_burst(b, (240, 220, 180), 12, 2)       # dust as it lands
             elif k == "forgiven":
@@ -126,6 +138,9 @@ class RaceScene(Scene):
             elif k == "coolant":
                 self.popups.add("COOL", C.COOL, sx, sy - 40, 30)
                 self.renderer.emit_burst(b, (120, 220, 255), 10, 1.5)
+            elif k == "heatpad":
+                self.popups.add("HEAT!", (255, 120, 40), sx, sy - 40, 30)
+                self.renderer.emit_burst(b, (255, 150, 40), 12, 1.8)
             elif k == "lap":
                 self.best_lap = e[1] if self.best_lap is None else min(self.best_lap, e[1])
                 if self.race.laps_done < self.track.laps:
@@ -140,8 +155,19 @@ class RaceScene(Scene):
         if boosting:
             self.boost_lvl = b.boost_level
         self.boost_k = min(1.0, self.boost_k + 0.25) if boosting else max(0.0, self.boost_k - 0.15)
+        # Speed feel: ease toward the boost level, then scroll the backdrop faster.
+        tb = 1.0 if boosting else 0.0
+        ts = 1.0 if boosting and b.boost_level == 2 else 0.0
+        self.fx_boost += max(-C.FX_EASE, min(C.FX_EASE, tb - self.fx_boost))
+        self.fx_super += max(-C.FX_EASE, min(C.FX_EASE, ts - self.fx_super))
+        self.bg_scroll += b.vx * (1 + C.FX_BG_BOOST * self.fx_boost + C.FX_BG_SUPER * self.fx_super)
         if boosting and self.ticks % (2 if b.boost_level == 2 else 3) == 0:
             self.renderer.emit_boost_sparks(b, b.x)
+        if b.state == "ride" and b.boost_level == 2:
+            # super boost: smoke, thicker as the heat nears the explosion
+            danger = (b.temp - C.ONE_SUPER_AT) / (C.TEMP_OVERHEAT - C.ONE_SUPER_AT)
+            if self.ticks % (3 if danger < 0.5 else 2) == 0:
+                self.renderer.emit_smoke(b, b.x, max(0.0, min(1.0, danger)))
         self.renderer.particles.update()
         self.popups.update()
         if self.finish_hold > 0:
@@ -186,9 +212,13 @@ class RaceScene(Scene):
 
     def draw(self, surf):
         b = self.race.bike
-        cam = b.x
+        # Camera runs ahead of the rider while boosting (the bike drifts back on
+        # screen, more road shows ahead) and shakes a touch in super boost.
+        lead = C.FX_CAM_LEAD * self.fx_boost + C.FX_CAM_LEAD_SUPER * self.fx_super
+        shake = C.FX_SHAKE * self.fx_super * (((self.ticks * 7919) % 5) / 2 - 1)
+        cam = b.x + lead + shake
         rd = self.renderer
-        rd.draw_backdrop(surf, cam)
+        rd.draw_backdrop(surf, cam, self.bg_scroll)
         rd.draw_track(surf, self.track, cam)
         from ui.art import LIVERIES
         pool = [k for k in LIVERIES if k != self.livery]
@@ -201,12 +231,16 @@ class RaceScene(Scene):
             if bk.speed > 0 and bk.state == "ride":
                 period = max(2, int(10 - bk.speed / 6))
                 frame = (bk.ticks // period) % 2
-            if me and self.boost_k > 0 and bk.state == "ride":
+            if me and bk.one_button and bk.state == "ride":
+                rd.draw_heat_flame(surf, bk, cam, self.ticks)
+            elif me and self.boost_k > 0 and bk.state == "ride":
                 rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
             rd.draw_bike(surf, bk, cam, liv, frame, me)
         if self.boost_k > 0 and b.state == "ride":
-            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k)
+            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
         rd.particles.draw(surf, cam)
+        rd.draw_speed_lines(surf, self.ticks, self.fx_boost * 0.7 + self.fx_super * 0.3,
+                            self.fx_super > 0.5)
         self.popups.draw(surf)
         W = self.app.view.width
         extra = list(self.info_lines)

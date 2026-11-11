@@ -13,19 +13,37 @@ sets a new home there.
   Lanes: each LANE_BAND px above/below home = one lane (clamped to the track).
   Lean:  within LEAN_DEAD px of home = neutral. Behind = back, ahead = forward.
     "angle" (default): on the ground, behind = wheelie. In the air, leaving
-        neutral captures the current nose angle; each LEAN_STEP-px step out from
-        home then aims AIM_STEP_DEG further up (behind) or down (ahead) from it.
+        neutral captures the current nose angle; each AIR_LEAN_STEP-px step out
+        from home then aims AIM_STEP_DEG further up (behind) or down (ahead) from
+        it. Air zones are tighter than ground ones (AIR_LEAN_DEAD), so small,
+        quick hand movements steer the nose.
         The rider rotates there and holds, so it turns the way the hand moves and
         can't over-rotate. Back at home the nose drifts down, as with no keys.
     "hold": any offset past LEAN_DEAD holds the lean (rate control, like keys).
 Zones and lanes switch in discrete steps with hysteresis. Left button =
 throttle, right button = turbo. Whichever device was used last (mouse movement
 vs. lean/lane keys) owns steering.
+
+Ground wheelies (setting "mouse_wheelie"): "ramps" (default) means that on
+flat ground, side-to-side movement just slides home along with the cursor (no
+lean; up/down still picks lanes). On a ramp, or just before one
+(RAMP_LEAN_LOOKAHEAD), leaning switches on, measured from where the cursor was,
+so you can pull a wheelie off the lip; in the air it works as above.
+"anywhere": the cursor leans on the ground at all times (the old behaviour).
+
+One-button throttle ("sticky anchor"): the anchor stays put when the button is
+released, and the cursor keeps steering lanes and lean with the button up, so
+tapping to manage heat never moves home. A press held still for
+ANCHOR_HOLD_TICKS away from home moves home to that spot (a ring fills while it
+charges). The first press of a race still anchors at once.
 """
+import math
+
 import pygame
 
 import config as C
 from bike import Controls
+from track.tiles import RAMP_S, RAMP_L
 
 SWIPE_STEP = 26          # logical px of vertical drag per lane change
 TAP_SLOP = 12            # max movement for a tap
@@ -33,10 +51,16 @@ TAP_SLOP = 12            # max movement for a tap
 LEAN_DEAD = 24           # px either side of home that counts as "no lean"
 LEAN_STEP = 22           # px per extra lean step past the neutral zone (angle mode)
 LEAN_HYST = 6            # px a cursor must be inside a new zone before it switches
+AIR_LEAN_DEAD = 10       # angle mode, mid-air: tighter neutral zone ...
+AIR_LEAN_STEP = 10       # ... and px per aim step (6 steps = 70 px for 72 deg)
+AIR_LEAN_HYST = 3
+RAMP_LEAN_LOOKAHEAD = 0.6  # tiles ahead of the rider where a ramp turns ground lean on
 AIM_MAX_STEPS = 6        # angle mode: furthest step counted (6 x 12 deg = 72 deg)
 AIM_STEP_DEG = 12.0      # angle mode: nose turn per lean step, mid-air
 LANE_BAND = 26           # px of cursor travel per lane (lanes are drawn 20 px apart)
 LANE_HYST = 6            # extra px past a band edge before switching lane
+ANCHOR_HOLD_TICKS = 30  # sticky anchor: hold still this long to move home (0.5 s)
+ANCHOR_MIN_DIST = 12     # sticky anchor: presses closer than this to home never re-anchor
 STEER_KEYS = (pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT,
               pygame.K_w, pygame.K_a, pygame.K_s, pygame.K_d)
 
@@ -80,7 +104,10 @@ class InputManager:
         self.mouse_driving = False     # steering AND throttle/turbo held this tick
         self.anchor = None             # (x, y) where the steering click landed
         self.anchor_lane = None        # rider's lane when the anchor was dropped
+        self.lean_locked = False       # flat ground, ramps-only wheelies: no lean this tick
         self._mouse_held = set()       # mouse buttons (1, 3) currently down
+        self._press = None             # sticky anchor: (x, y) of a press that may re-anchor
+        self._press_ticks = 0
         self.layout(view.width)
 
     # -- layout --------------------------------------------------------------
@@ -148,11 +175,16 @@ class InputManager:
             if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and e.button in (1, 3):
                 x, y = self.view.to_logical(e.pos)
                 if e.type == pygame.MOUSEBUTTONDOWN:
-                    if not self._mouse_held:          # first button down: re-anchor here
-                        self.set_anchor(x, y)
+                    if not self._mouse_held:
+                        if self.sticky_anchor and self.anchor is not None:
+                            self._press, self._press_ticks = (x, y), 0   # maybe re-anchor
+                        else:
+                            self.set_anchor(x, y)     # first button down: re-anchor here
                     self._mouse_held.add(e.button)
                 else:
                     self._mouse_held.discard(e.button)
+                    if not self._mouse_held:
+                        self._press = None
             if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and e.button == 3:
                 x, y = self.view.to_logical(e.pos)
                 self.mouse_pos = (x, y)
@@ -239,6 +271,43 @@ class InputManager:
     def lean_mode(self):
         return "hold" if self.settings.get("mouse_steer") == "hold" else "angle"
 
+    def _ground_lean_locked(self, bike):
+        """True on the ground away from ramps when wheelies are ramps-only."""
+        if bike is None or bike.airborne or self.settings.get("mouse_wheelie", "ramps") != "ramps":
+            return False
+        tr = bike.track
+        ahead = bike.x + RAMP_LEAN_LOOKAHEAD * C.TILE_W
+        return not any(tr.terrain_at(x) in (RAMP_S, RAMP_L) for x in (bike.x, ahead))
+
+    @property
+    def sticky_anchor(self):
+        """One-button throttle: home stays put between presses (see module doc)."""
+        return self.mouse_enabled and self.settings.get("throttle_mode") == "one"
+
+    @property
+    def anchor_charge(self):
+        """0..1 progress of a press that will move home, or None."""
+        if self._press is None:
+            return None
+        return min(1.0, self._press_ticks / ANCHOR_HOLD_TICKS)
+
+    def _update_sticky_press(self):
+        """Count a still, held press; once it has charged, home moves there."""
+        if self._press is None:
+            return
+        px, py = self._press
+        mx, my = self.mouse_pos
+        if abs(mx - px) > TAP_SLOP or abs(my - py) > TAP_SLOP:
+            self._press = None                 # the press became a steer
+            return
+        if self.anchor is not None and math.hypot(px - self.anchor[0], py - self.anchor[1]) < ANCHOR_MIN_DIST:
+            self._press = None                 # already home
+            return
+        self._press_ticks += 1
+        if self._press_ticks >= ANCHOR_HOLD_TICKS:
+            self._press = None
+            self.set_anchor(px, py)
+
     @property
     def mouse_steering(self):
         """Cursor drives lean/lanes: anchored by a click, and used more recently than keys.
@@ -257,6 +326,15 @@ class InputManager:
         self.mouse_active = True
         self._reset_air()              # a mid-air click starts the lean afresh too
 
+    def recenter_anchor(self):
+        """After a crash recovery: move home to the cursor (rider's current lane),
+        so the player doesn't have to find the old home again. Only once the mouse
+        has been steering this race (an anchor exists)."""
+        if self.anchor is None or not self.mouse_enabled:
+            return
+        self._press = None
+        self.set_anchor(*self.mouse_pos)
+
     def reset_mouse(self):
         """Forget the anchor (race start / end)."""
         self.anchor = None
@@ -264,6 +342,7 @@ class InputManager:
         self.mouse_lean = 0
         self.mouse_lane = None
         self._mouse_held.clear()
+        self._press = None
         self._reset_air()
 
     def _reset_air(self):
@@ -274,19 +353,26 @@ class InputManager:
         return AIM_MAX_STEPS if self.lean_mode == "angle" else 1
 
     @staticmethod
-    def _zone(dx, n):
+    def _lean_sizes(air):
+        """(dead zone, step, hysteresis) in px: tighter mid-air in angle mode."""
+        return (AIR_LEAN_DEAD, AIR_LEAN_STEP, AIR_LEAN_HYST) if air else (LEAN_DEAD, LEAN_STEP, LEAN_HYST)
+
+    @staticmethod
+    def _zone(dx, n, dead=LEAN_DEAD, step=LEAN_STEP):
         a = abs(dx)
-        if a <= LEAN_DEAD:
+        if a <= dead:
             return 0
-        z = min(n, 1 + int((a - LEAN_DEAD) // LEAN_STEP))
+        z = min(n, 1 + int((a - dead) // step))
         return z if dx > 0 else -z
 
-    def _update_mouse_lean(self):
+    def _update_mouse_lean(self, air=False):
         n = self._lean_steps()
+        dead, step, hyst = self._lean_sizes(air)
         dx = self.mouse_pos[0] - self.anchor[0]
-        z = self._zone(dx, n)
-        # Hysteresis: only switch once the cursor is LEAN_HYST px inside the new zone.
-        if z != self.mouse_lean and self._zone(dx - LEAN_HYST, n) == z == self._zone(dx + LEAN_HYST, n):
+        z = self._zone(dx, n, dead, step)
+        # Hysteresis: only switch once the cursor is hyst px inside the new zone.
+        if z != self.mouse_lean and (self._zone(dx - hyst, n, dead, step) == z
+                                     == self._zone(dx + hyst, n, dead, step)):
             self.mouse_lean = z
 
     def _update_air_aim(self, bike):
@@ -330,10 +416,23 @@ class InputManager:
             c.a = c.a or m[0]
             c.b = c.b or m[2]
             driving = bool(m[0] or m[2])
+            if self.sticky_anchor:
+                if driving:
+                    self._update_sticky_press()
+                else:
+                    self._press = None
+                driving = True             # the cursor steers with the button up too
         self.mouse_driving = self.mouse_steering and driving
+        self.lean_locked = False
         if self.mouse_driving:
-            self._update_mouse_lean()
             air_aim = self.lean_mode == "angle" and bike is not None and bike.airborne
+            if self._ground_lean_locked(bike):
+                # Flat ground, ramps-only wheelies: home slides sideways with the
+                # cursor, so horizontal movement never leans (lanes still work).
+                self.anchor = (self.mouse_pos[0], self.anchor[1])
+                self.mouse_lean = 0
+                self.lean_locked = True
+            self._update_mouse_lean(air_aim)
             if air_aim:
                 self._update_air_aim(bike)
             elif bike is not None:
@@ -377,7 +476,6 @@ class InputManager:
         """Anchor, lean zones, lane ladder, reticle and aimed nose angle while steering."""
         if not self.mouse_steering:
             return
-        import math
         mx, my = self.mouse_pos
         if not self.mouse_driving:
             # Buttons up: just a dim reticle so the (hidden) cursor can be repositioned.
@@ -390,8 +488,9 @@ class InputManager:
         col = (240, 240, 250) if z == 0 else (120, 220, 255) if z < 0 else (255, 150, 70)
         dim = (200, 200, 215)
         # zone edges around home: tall ticks = neutral zone, short ticks = air lean steps
-        for k in range(self._lean_steps() if air else 1):
-            off = LEAN_DEAD + k * LEAN_STEP
+        dead, step, _ = self._lean_sizes(air)
+        for k in range(0 if self.lean_locked else self._lean_steps() if air else 1):
+            off = dead + k * step
             h = 6 if k == 0 else 3
             for sx in (ax - off, ax + off):
                 pygame.draw.line(surf, dim, (sx, my - h), (sx, my + h), 1)
@@ -404,7 +503,7 @@ class InputManager:
                 pygame.draw.circle(surf, col if on else dim, (int(ax), y), 3 if on else 2)
         # aimed lane: chevron just behind the rider
         if self.mouse_lane is not None:
-            bx = C.BIKE_SCREEN_X
+            bx = bike_pos[0] if bike_pos else C.BIKE_SCREEN_X   # camera may lead the rider
             ly = C.lane_y(self.mouse_lane) + C.LANE_SPACING / 2
             pygame.draw.polygon(surf, col, [(bx - 52, ly - 5), (bx - 44, ly), (bx - 52, ly + 5)])
         # aimed nose angle: a dashed line through the rider while airborne
@@ -418,6 +517,14 @@ class InputManager:
                 p1 = (bx + dx * (t + 4), by + dy * (t + 4))
                 pygame.draw.line(surf, (20, 18, 30), p0, p1, 4)
                 pygame.draw.line(surf, col, p0, p1, 2)
+        # sticky anchor: a ring fills around a held press that is about to become home
+        charge = self.anchor_charge
+        if charge is not None and self._press_ticks >= 6:      # skip quick heat taps
+            px, py = self._press
+            r = pygame.Rect(int(px) - 12, int(py) - 12, 24, 24)
+            pygame.draw.circle(surf, (20, 18, 30), r.center, 12, 1)
+            pygame.draw.arc(surf, (255, 225, 120), r, math.pi / 2,
+                            math.pi / 2 + 2 * math.pi * charge, 3)
         # reticle with one arrow per lean step
         pygame.draw.circle(surf, (20, 18, 30), (int(mx), int(my)), 7, 3)
         pygame.draw.circle(surf, col, (int(mx), int(my)), 6, 2)

@@ -62,7 +62,7 @@ def test_full_run_can_be_won_and_pays_out():
     while r.status == "active":
         h = r.prepare_heat()
         st = r.stats_for_heat(h)
-        race = Race(h.track, st, rivals=h.rivals, rival_skill=h.rival_skill, seed=h.seed, countdown=False)
+        race = Race(h.track, st, rivals=h.rivals, rival_level=h.rival_level, seed=h.seed, countdown=False)
         while not race.finished and race.time_ticks < 60 * 300:
             race.step(ai.controls(race.bike))
         res = {"finished": race.finished, "time": race.time_ticks, "position": race.position(),
@@ -108,3 +108,43 @@ def test_second_wind_is_once_per_run():
     assert r.stats_for_heat().crash_forgives == 1
     r.forgives_used = 1
     assert r.stats_for_heat().crash_forgives == 0
+
+
+def test_rivals_get_faster_and_cleaner_each_round():
+    from race import rival_setup
+    r = RunState(seed=3)
+    levels = [h.rival_level for h in r.heats]
+    assert levels == sorted(levels) and levels[0] == 0 and levels[-1] == 1
+    prev = None
+    for lv in levels:
+        stats, ai = rival_setup(lv, 1, 3)
+        cur = (stats["max_speed_a"], ai["skill"], -ai["blunder"], -ai["miss"])
+        if prev:
+            assert all(c >= p for c, p in zip(cur, prev)) and cur != prev
+        prev = cur
+    first, ai0 = rival_setup(0.0, 1, 3)
+    assert first["max_speed_a"] < C.SPEED_MAX_A and ai0["blunder"] > 0 and ai0["miss"] > 0
+
+
+def test_first_map_has_no_whoops():
+    from track.generator import generate
+    from track.tiles import WHOOPS
+    for seed in range(12):
+        assert WHOOPS not in generate(seed, depth=0).track.terrain
+
+
+def test_every_heat_is_a_race_with_rivals():
+    for seed in range(6):
+        for h in RunState(seed=seed).heats:
+            assert h.rivals == 3 and h.target.kind == "place"
+
+
+def test_time_trial_mode_is_solo_against_par():
+    import main as M
+    from ui.menus import TitleScene
+    app = M.App()
+    sc = TitleScene(app); app.set_scene(sc)
+    assert any(it["label"] == "TIME TRIAL" for it in sc.menu.items)
+    sc.time_trial()
+    rs = app.scene
+    assert not rs.race.rivals and rs.target.kind == "time" and rs.target.value > 0

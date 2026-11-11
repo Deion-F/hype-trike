@@ -143,22 +143,42 @@ def one_button_bike():
     return b
 
 
-def test_one_button_heats_past_A_ceiling_into_boost_then_super():
+def test_one_button_starts_cold_and_boosts_within_about_two_seconds():
     b = one_button_bike()
-    hold = Controls(a=True)
-    run(b, hold, 120)
-    assert b.temp < C.TEMP_STABLE_A and b.boost_level == 0
-    while b.temp < C.TEMP_STABLE_A + 0.5:
-        run(b, hold, 1)
-    assert b.boost_level == 1                      # automatic boost past the old A ceiling
-    run(b, hold, 60)
+    assert b.temp == 0.0
+    run(b, Controls(a=True), 60)
+    assert b.boost_level == 0 and 0 < b.speed < C.SPEED_MAX_A
+    t = 60
+    while b.boost_level == 0:
+        run(b, Controls(a=True), 1)
+        t += 1
+    assert t <= 2.3 * C.FPS                        # first boost comes quickly
+    run(b, Controls(a=True), 60)
     assert C.SPEED_MAX_A < b.speed <= C.SPEED_MAX_B
     while b.temp < C.ONE_SUPER_AT + 0.1:
-        run(b, hold, 1)
-    run(b, hold, 1)
+        run(b, Controls(a=True), 1)
     assert b.boost_level == 2 and b.state == "ride"
-    run(b, hold, 20)
+    run(b, Controls(a=True), 20)
     assert b.speed > C.SPEED_MAX_B                 # super boost beats normal turbo
+
+
+def test_one_button_speed_follows_heat():
+    b = one_button_bike()
+    b.temp = C.ONE_BOOST_AT / 2
+    run(b, Controls(), 1)
+    b.temp = C.ONE_BOOST_AT / 2                    # hold the heat steady by hand
+    for _ in range(200):
+        b.step(Controls())
+        b.temp = C.ONE_BOOST_AT / 2
+    assert abs(b.speed - C.SPEED_MAX_A / 2) <= 1   # half heat -> half speed
+    # Letting go: heat and speed fall together, both reach zero.
+    b.temp = C.ONE_BOOST_AT
+    b.speed = C.SPEED_MAX_A
+    run(b, Controls(), C.THROTTLE_GRACE_TICKS + 120)
+    assert 0 < b.temp < C.ONE_BOOST_AT
+    assert abs(b.speed - b.heat_speed()) <= 1.5    # speed tracks heat on the way down
+    run(b, Controls(), 400)
+    assert b.temp == 0 and b.speed == 0
 
 
 def test_one_button_explodes_past_red_window_and_recovers_cold():
@@ -174,12 +194,8 @@ def test_one_button_explodes_past_red_window_and_recovers_cold():
     assert "bike_drop" in kinds and "recovered" in kinds and b.state == "ride"
 
 
-def test_one_button_letting_go_cools_and_crash_zeroes_heat():
+def test_one_button_crash_zeroes_heat():
     b = one_button_bike()
-    run(b, Controls(a=True), 300)
-    hot = b.temp
-    run(b, Controls(), C.THROTTLE_GRACE_TICKS + 60)
-    assert b.temp < hot
     b.temp = 20.0
     b._crash([], "nose")
     assert b.temp == 0.0
@@ -191,4 +207,56 @@ def test_classic_mode_unchanged_by_one_button_rules():
     assert abs(b.temp - C.TEMP_STABLE_A) < 1e-6 and b.boost_level == 0
     b.temp = 20.0
     b._crash([], "nose")
+    assert b.temp == 20.0
+
+
+def test_one_button_pads_are_heat_pads():
+    t = make_track("S" + "." * 60, laps=1)
+    apply_layer(t, 1, "." * 20 + "c")
+    b = Bike(t, lane=1)
+    b.one_button = True
+    for _ in range(2000):
+        before = b.temp
+        ev = b.step(Controls())
+        b.temp = 20.0 if ("heatpad",) not in ev else b.temp   # hold mid-boost heat
+        if ("heatpad",) in ev:
+            assert ("coolant",) not in ev
+            assert abs(b.temp - (before + C.ONE_HEAT_PAD)) < 0.2   # a burst of heat
+            return
+    raise AssertionError("never reached the heat pad")
+
+
+def test_one_button_heat_pad_in_the_red_explodes():
+    t = make_track("S" + "." * 60, laps=1)
+    apply_layer(t, 1, "." * 20 + "c")
+    b = Bike(t, lane=1)
+    b.one_button = True
+    evs = []
+    for _ in range(2000):
+        if not any(e[0] == "heatpad" for e in evs):
+            b.temp = C.TEMP_OVERHEAT - 2           # deep in the red window until the pad
+        evs += b.step(Controls())
+        if ("explode",) in evs:
+            return
+    raise AssertionError("heat pad in the red window should blow the bike up")
+
+
+def _land_at(one_button, angle, temp=20.0):
+    b = Bike(flat(100))
+    b.one_button = one_button
+    b.temp, b.speed, b.angle = temp, 40, angle
+    b.air_ticks = C.MICRO_HOP_TICKS + 10
+    ev = []
+    b._land(ev)
+    return b, ev
+
+
+def test_one_button_rough_landing_dumps_heat():
+    b, ev = _land_at(True, angle=20)               # nose-high: rough, not a crash
+    assert ("rough",) in ev and b.temp == 20.0 - C.ONE_ROUGH_HEAT_LOSS
+    b, ev = _land_at(True, angle=2)                # clean landing keeps the heat
+    assert ("perfect",) in ev and b.temp == 20.0
+    b, _ = _land_at(True, angle=20, temp=3.0)
+    assert b.temp == 0.0                           # never below cold
+    b, _ = _land_at(False, angle=20)               # classic: heat is a cost, untouched
     assert b.temp == 20.0

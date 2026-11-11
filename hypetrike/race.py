@@ -3,9 +3,29 @@ import config as C
 from bike import Bike, Controls, base_stats
 
 
+def rival_setup(level, i, n):
+    """Stats tweaks + AI settings for rival i of n at difficulty level 0..1.
+
+    Level 0 (first round of a run): clearly slower than the player, no turbo,
+    sloppy landings and the odd missed hazard, so they crash now and then.
+    Level 1 (final round): close to the player's top speed, the faster ones
+    turbo, and they rarely make mistakes. Rivals in one race are spread a
+    little around the level so there's a pack, not a wall."""
+    lv = max(0.0, min(1.0, level + (i - (n - 1) / 2) * 0.1))
+    sloppy = (1.0 - lv) ** 1.5
+    stats = dict(max_speed_a=41 + 5 * lv,                      # 41 .. 46
+                 accel_interval=C.ACCEL_INTERVAL + 1.0 * (1 - lv))
+    turbo = lv >= 0.3 and (i % 2 == 0 or lv >= 0.7)
+    # Turbo tops out at the player's turbo speed, so classic-mode players can win too.
+    stats["max_speed_b"] = min(C.SPEED_MAX_B, stats["max_speed_a"] + 2)
+    ai = dict(turbo=turbo, turbo_temp=22 + i * 2, skill=0.45 + 0.53 * lv,
+              blunder=0.14 * sloppy, miss=0.35 * sloppy)
+    return stats, ai
+
+
 class Race:
     def __init__(self, track, stats=None, rivals=0, lane=1, countdown=True,
-                 rival_skill=0.85, seed=0):
+                 rival_level=0.5, seed=0):
         from track.validator import GhostAI
         self.track = track
         self.bike = Bike(track, stats or base_stats(), lane=lane)
@@ -20,14 +40,13 @@ class Race:
         lanes = [l for l in range(C.LANES) if l != lane]
         for i in range(rivals):
             rs = base_stats("dirt")
-            skill = max(0.3, min(0.98, rival_skill + (i - rivals / 2) * 0.05))
-            # Rivals ride a little below the player's top speed so racing is fair.
-            rs.max_speed_a = C.SPEED_MAX_A - 2 + i % 3
+            tweaks, ai = rival_setup(rival_level, i, rivals)
+            for k, v in tweaks.items():
+                setattr(rs, k, v)
             rb = Bike(track, rs, lane=lanes[i % len(lanes)],
                       x=C.START_X - 6 * (i + 1))
             self.rivals.append(rb)
-            self.rival_ai.append(GhostAI(turbo=i % 2 == 0, turbo_temp=22 + i * 2,
-                                         skill=skill, seed=seed * 31 + i))
+            self.rival_ai.append(GhostAI(seed=seed * 31 + i, **ai))
             self.rival_finish.append(None)
 
     @property

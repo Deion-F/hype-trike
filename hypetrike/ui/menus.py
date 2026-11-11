@@ -124,7 +124,8 @@ class TitleScene(BackdropScene):
 
     def build_menu(self):
         items = []
-        items.append(dict(label="NEW RUN", sub="6 heats - one life", action=self.new_run))
+        items.append(dict(label="NEW RUN", sub="6 races vs rivals - one life", action=self.new_run))
+        items.append(dict(label="TIME TRIAL", sub="Solo vs the clock - beat par", action=self.time_trial))
         items.append(dict(label="PRACTICE", sub="Valley Loop - solo, best lap", action=self.practice))
         items.append(dict(label="QUICK RACE", sub="New generated track vs 3 rivals", action=self.quick_race))
         for extra in getattr(self.app, "title_items", []):
@@ -134,7 +135,7 @@ class TitleScene(BackdropScene):
         items.append(dict(label="GARAGE", sub=f"{self.app.profile.currency} coins - unlocks & loadout",
                           action=lambda: self.app.set_scene(__import__("ui.garage", fromlist=["x"]).GarageScene(self.app))))
         items.append(dict(label="SETTINGS", action=lambda: self.app.set_scene(SettingsScene(self.app))))
-        self.menu = Menu(items, top=94, height=34, gap=4, width=250)
+        self.menu = Menu(items, top=86, height=31, gap=3, width=250)
 
     def new_run(self):
         from ui.run_scenes import start_run
@@ -159,6 +160,30 @@ class TitleScene(BackdropScene):
         tr.theme = random.choice(active_themes(p))
         self.app.set_scene(RaceScene(self.app, tr, base_stats(sel["vehicle"]), sel["livery"],
                                      rivals=3, title=tr.name, seed=seed,
+                                     info_lines=[f"Seed {seed}  Depth {depth}"],
+                                     on_done=lambda r: self.app.set_scene(TitleScene(self.app))))
+
+    def time_trial(self):
+        """Solo on a fresh generated track against a par time (no rivals)."""
+        import random
+        from track.generator import generate
+        from track.validator import validate
+        from bike import base_stats
+        from run.manager import Target
+        from meta.shop import active_themes
+        p = self.app.profile
+        sel = p.selected
+        st = base_stats(sel["vehicle"])
+        seed = random.randrange(1 << 30)
+        depth = random.randint(0, 3)
+        g = generate(seed, depth, validate_with=st)
+        tr = g.track
+        tr.theme = random.choice(active_themes(p))
+        ghost = validate(tr, st)
+        par = int((ghost["ticks"] if ghost["finished"] else g.validation["ticks"]) * TRIAL_PAR_SLACK)
+        self.app.set_scene(RaceScene(self.app, tr, st, sel["livery"], rivals=0,
+                                     title=f"Time Trial: {tr.name}", seed=seed,
+                                     target=Target("time", par),
                                      info_lines=[f"Seed {seed}  Depth {depth}"],
                                      on_done=lambda r: self.app.set_scene(TitleScene(self.app))))
 
@@ -202,10 +227,12 @@ class TitleScene(BackdropScene):
         hint = ("Z hold: heat builds into boost - don't hit the red!  arrows lean/lane" if one
                 else "Z throttle  X turbo  arrows lean/lane")
         if self.app.input.mouse_enabled:
-            hint = ("Mouse: hold to ride, heat builds boost - click, then drag back/fwd to lean, up/down for lanes"
+            hint = ("Mouse: hold/tap to heat, cursor steers from home - hold still to move home"
                     if one else "Mouse: L throttle  R turbo - click, then drag back/fwd to lean, up/down for lanes")
         hud.text(surf, hint, (10, C.VIEW_H - 10), 16, (200, 196, 220), anchor="bottomleft")
 
+
+TRIAL_PAR_SLACK = 1.12   # time trial par = ghost time (throttle only, perfect landings) x this
 
 SLIDER = "slider"     # SETTING_ROWS marker: a 0..1 volume slider instead of a cycled option
 
@@ -216,6 +243,7 @@ SETTING_ROWS = [
     ("touch_ui", "Touch buttons", [("auto", "Auto"), ("on", "Always"), ("off", "Hidden")]),
     ("throttle_mode", "Throttle", [("classic", "Throttle + boost"), ("one", "One button")]),
     ("mouse_steer", "Mouse lean", [("angle", "Aim angle"), ("hold", "Hold lean"), (False, "Off")]),
+    ("mouse_wheelie", "Mouse wheelie", [("ramps", "Ramps only"), ("anywhere", "Anywhere")]),
     ("sfx_vol", "Sound effects", SLIDER),
     ("music_vol", "Music", SLIDER),
     ("smooth", "Desktop scaling", [(False, "Sharp"), (True, "Smooth")]),

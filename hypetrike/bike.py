@@ -105,7 +105,7 @@ class Bike:
         self._accel_acc = 0.0
         self._grace = 0                  # ticks of throttle grace left after letting go
         self.in_grace = False
-        self.one_button = False          # one-button throttle: heat drives boost (player option)
+        self._one_button = False         # one-button throttle: heat drives speed (player option)
         self.boost_level = 0             # 0 none, 1 boost/turbo, 2 super boost (for effects/HUD)
         self.crash_total = self.stats.crash_ticks
         self._coast_acc = 0
@@ -116,6 +116,26 @@ class Bike:
         self.stats_counters = {"perfect": 0, "landings": 0, "crashes": 0, "rough": 0}
 
     # ------------------------------------------------------------------------
+    @property
+    def one_button(self):
+        return self._one_button
+
+    @one_button.setter
+    def one_button(self, on):
+        """In one-button mode heat is the throttle, so a fresh bike starts cold."""
+        if on and not self._one_button and self.speed == 0 and self.ticks == 0:
+            self.temp = 0.0
+        self._one_button = bool(on)
+
+    def heat_speed(self):
+        """One-button mode: the top speed the current heat allows (before grip)."""
+        s, t = self.stats, self.temp
+        if t < C.ONE_BOOST_AT:
+            return s.max_speed_a * max(0.0, t) / C.ONE_BOOST_AT
+        if t < C.ONE_SUPER_AT:
+            return s.max_speed_b
+        return s.max_speed_b + C.SUPER_BOOST_EXTRA
+
     @property
     def vx(self):
         return self.speed * C.SPEED_TO_PX
@@ -186,17 +206,20 @@ class Bike:
             self.lane_pos += math.copysign(C.LANE_CHANGE_RATE, d)
 
     def _boost_from(self, ctl):
-        """0/1/2 boost level for this tick. One-button mode: from the temperature."""
+        """0/1/2 boost level for this tick. One-button mode: from the heat alone."""
+        if self.one_button:
+            if self.temp >= C.ONE_SUPER_AT:
+                return 2
+            return 1 if self.temp >= C.ONE_BOOST_AT else 0
         if not (ctl.a or ctl.b):
             return 0
-        if not self.one_button:
-            return 1 if ctl.b else 0
-        if self.temp >= C.ONE_SUPER_AT:
-            return 2
-        return 1 if self.temp >= C.TEMP_STABLE_A else 0
+        return 1 if ctl.b else 0
 
     def _throttle(self, ctl):
         self.boost_level = self._boost_from(ctl)
+        if self.one_button and not self.airborne:
+            self._throttle_one()
+            return
         if self.airborne:
             self._drag_acc += 1
             if self._drag_acc >= C.AIR_DRAG_INTERVAL:
@@ -223,6 +246,23 @@ class Bike:
             self._coast_acc += 1
             interval = 2 if mud else (C.OVERSPEED_INTERVAL if holding else C.COAST_INTERVAL)
             if self._coast_acc >= interval:
+                self._coast_acc = 0
+                self.speed = max(cap, self.speed - 1)
+
+    def _throttle_one(self):
+        """One-button: speed chases the heat's speed, held or not. Keeping a heat
+        level keeps that speed; letting go cools the engine and speed falls with it."""
+        cap = self.heat_speed() * self.grip()
+        if self.track.surface_at(self.lane_index, self.x) == MUD:
+            cap = min(cap, self.stats.mud_speed)
+        if self.speed < cap and self.wobble == 0:
+            self._accel_acc += self.grip() / self.stats.accel_interval
+            if self._accel_acc >= 1.0:
+                self._accel_acc -= 1.0
+                self.speed = min(cap, self.speed + 2)
+        elif self.speed > cap:
+            self._coast_acc += 1
+            if self._coast_acc >= C.OVERSPEED_INTERVAL:
                 self._coast_acc = 0
                 self.speed = max(cap, self.speed - 1)
 
@@ -253,17 +293,18 @@ class Bike:
             ev.append(("overheat",))
 
     def _temperature_one(self, ctl, ev):
-        """One-button heat: holding always heats (A rate, then turbo rate past the
-        old A ceiling); letting go cools, never below idle unless a crash zeroed it."""
+        """One-button heat: holding heats (fast while cold, turbo rate in the boost
+        band); letting go cools all the way down to cold, and speed follows."""
         s = self.stats
         if self.chill > 0:
             self.chill -= 1
             if ctl.a or ctl.b:
                 return
         if ctl.a or ctl.b:
-            self.temp += s.heat_a if self.temp < C.TEMP_STABLE_A else s.heat_b
-        elif self.temp > C.TEMP_START:
-            self.temp = max(C.TEMP_START, self.temp - s.cool_coast - s.passive_cool)
+            self.temp += (s.heat_a * C.ONE_COLD_HEAT_MULT if self.temp < C.ONE_BOOST_AT
+                          else s.heat_b)
+        elif self.temp > 0:
+            self.temp = max(0.0, self.temp - s.cool_coast - s.passive_cool)
         if self.temp >= C.TEMP_OVERHEAT:
             self.temp = C.TEMP_OVERHEAT
             self._explode(ev)
@@ -356,6 +397,10 @@ class Bike:
             self.speed *= C.ROUGH_SPEED_KEEP
             self.wobble = C.ROUGH_WOBBLE_TICKS
             self.stats_counters["rough"] += 1
+            if self.one_button:
+                # heat is speed here: a sloppy landing dumps heat, so landing
+                # well is how you keep your boost
+                self.temp = max(0.0, self.temp - C.ONE_ROUGH_HEAT_LOSS)
             ev.append(("rough",))
         else:
             self._crash(ev, "nose" if err < 0 else "loop")
@@ -372,9 +417,15 @@ class Bike:
             self._last_debris_col = -1
         if surf == COOLANT and col != self._last_cool_col:
             self._last_cool_col = col
-            self.temp = min(self.temp, self.stats.coolant_reset)
             self.chill = self.stats.coolant_chill
-            ev.append(("coolant",))
+            if self.one_button:
+                # One-button: pads are heat pads. A burst of heat (speed) that can
+                # push you into the red, or past it.
+                self.temp += C.ONE_HEAT_PAD
+                ev.append(("heatpad",))
+            else:
+                self.temp = min(self.temp, self.stats.coolant_reset)
+                ev.append(("coolant",))
         elif surf == DEBRIS and col != self._last_debris_col:
             lx = self.x % C.TILE_W
             if 28 <= lx <= 52 and abs(self.lane_pos - self.lane_index) < 0.4:

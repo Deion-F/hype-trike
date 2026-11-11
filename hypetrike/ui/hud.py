@@ -77,11 +77,11 @@ def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
     panel(surf, (x - 4, y - 16, w + 8, h + 22), 150)
     full = C.TEMP_OVERHEAT
     px = lambda t: x + int(w * max(0.0, min(full, t)) / full)        # noqa: E731
-    b0, s0 = px(C.TEMP_STABLE_A), px(C.ONE_SUPER_AT)
+    b0, s0 = px(C.ONE_BOOST_AT), px(C.ONE_SUPER_AT)
     surf.fill((40, 36, 52), (x, y, w, h))
     surf.fill((86, 62, 40), (b0, y, s0 - b0, h))                      # boost band
     surf.fill((110, 30, 36), (s0, y, x + w - s0, h))                  # red window
-    if temp < C.TEMP_STABLE_A:
+    if temp < C.ONE_BOOST_AT:
         col = C.GOOD
     elif temp < C.ONE_SUPER_AT:
         col = (255, 150, 50)

@@ -43,15 +43,32 @@ HEAT_A = 0.06               # per tick while below 17 on A
 HEAT_B = 0.07               # per tick on B (no ceiling until overheat)
 COOL_A = 0.03               # per tick when above 17 on A
 COOL_COAST = 0.05           # per tick when off throttle
-# One-button throttle (setting "throttle_mode" = "one"): holding always heats the
-# engine; past TEMP_STABLE_A it boosts on its own, past ONE_SUPER_AT it super-boosts,
-# and reaching TEMP_OVERHEAT explodes the bike. Any crash resets the heat to 0.
-ONE_SUPER_AT = 29.5         # start of the red super-boost window (~0.6 s before boom)
+# One-button throttle (setting "throttle_mode" = "one"): heat IS the throttle.
+# Holding heats the engine, letting go cools it, and speed follows the heat:
+# 0..ONE_BOOST_AT ramps 0..A top speed, ONE_BOOST_AT..ONE_SUPER_AT is the boost
+# band (turbo top speed), past ONE_SUPER_AT is super boost, and reaching
+# TEMP_OVERHEAT explodes the bike. The engine starts cold; a crash zeroes the heat.
+ONE_BOOST_AT = 9.0          # start of the boost band (classic A ceiling is 17)
+ONE_COLD_HEAT_MULT = 1.6    # heat_a multiplier below the boost band (~2 s cold -> boost)
+ONE_HEAT_PAD = 5.0          # pads are HEAT pads in one-button mode: +heat (speed, but risk)
+ONE_ROUGH_HEAT_LOSS = 6.0   # rough landings dump this much heat (lost boost / speed)
+ONE_SUPER_AT = 27.0         # start of the red super-boost window (5 heat, ~1.2 s before boom)
 SUPER_BOOST_EXTRA = 3       # extra top speed over turbo while super-boosting
 EXPLODE_EXTRA_TICKS = 100   # explosion lasts this much longer than a normal crash
 EXPLODE_DROP_AT = 0.82      # fraction of the explosion when the new bike touches down
 THROTTLE_GRACE_TICKS = 36   # 0.6 s after letting go: speed holds (A cap), temp frozen
 OVERHEAT_TICKS = 150        # engine stall duration
+
+# --- speed feel (visual only) ---------------------------------------------------
+# Boost and super boost ease in a "speed feel" that scrolls the backdrop faster,
+# pushes the camera ahead of the rider, draws screen-wide speed lines and (super
+# only) shakes the view a little. Physics never sees any of this.
+FX_EASE = 0.05              # per tick, how fast the feel follows the boost level
+FX_BG_BOOST = 0.9           # extra backdrop scroll speed at full boost (x normal)
+FX_BG_SUPER = 1.2           # ... and on top of that at full super boost
+FX_CAM_LEAD = 12            # px the camera runs ahead at full boost
+FX_CAM_LEAD_SUPER = 12      # ... and on top of that at full super boost
+FX_SHAKE = 1.5              # px of horizontal shake at full super boost
 
 # --- air / landing ---------------------------------------------------------------
 GRAVITY = 0.20              # px / tick^2

@@ -13,11 +13,17 @@ from track.tiles import MUD, DEBRIS, COOLANT, GAP
 
 
 class GhostAI:
-    def __init__(self, turbo=False, turbo_temp=24.0, skill=1.0, seed=0):
+    def __init__(self, turbo=False, turbo_temp=24.0, skill=1.0, seed=0, blunder=0.0, miss=0.0):
+        """skill: landing aim precision. blunder: chance a jump's aim is badly off
+        (rough landing or crash). miss: chance of not dodging a hazard ahead.
+        The validator ghost uses the defaults (perfect, never blunders)."""
         self.turbo = turbo
         self.turbo_temp = turbo_temp
         self.skill = skill
+        self.blunder = blunder
+        self.miss = miss
         self.rng = random.Random(seed)
+        self._blind_until = -1.0        # x until which a missed hazard is ignored
         self._jump_error = 0.0
         self._was_air = False
         self._lane_cooldown = 0
@@ -32,6 +38,9 @@ class GhostAI:
                 # New jump: pick this jump's aiming error from skill.
                 spread = (1.0 - self.skill) * 22.0
                 self._jump_error = self.rng.uniform(-spread, spread * 0.6)
+                if self.rng.random() < self.blunder:
+                    # botched jump: way off, nose-down (crash) or nose-high (rough/loop)
+                    self._jump_error = self.rng.choice((-1, 1)) * self.rng.uniform(16, 34)
             self._was_air = True
             self._steer_air(bike, c)
             return c
@@ -79,6 +88,11 @@ class GhostAI:
 
         here = lane_cost(bike.lane)
         if here <= 0.5:
+            return
+        if bike.x < self._blind_until:
+            return                      # didn't see this one coming
+        if self.miss and self.rng.random() < self.miss:
+            self._blind_until = bike.x + 3 * C.TILE_W
             return
         best = min(range(C.LANES), key=lane_cost)
         if lane_cost(best) < here:

@@ -31,7 +31,10 @@ class Target:
         if self.kind == "time":
             return f"TARGET: finish under {fmt_time(self.value)}"
         if self.kind == "place":
-            return "TARGET: win the race" if self.value == 1 else f"TARGET: finish top {self.value}"
+            goal = "win the race" if self.value == 1 else f"finish top {self.value}"
+            if self.modifier:
+                return f"{MODIFIERS[self.modifier][0].upper()}: {goal}"
+            return f"TARGET: {goal}"
         name = MODIFIERS[self.modifier][0]
         return f"SURVIVE ({name}): under {fmt_time(self.value)}"
 
@@ -47,12 +50,12 @@ class Target:
 
 
 class Heat:
-    def __init__(self, index, seed, target, rivals, rival_skill):
+    def __init__(self, index, seed, target, rivals, rival_level):
         self.index = index
         self.seed = seed
         self.target = target
         self.rivals = rivals
-        self.rival_skill = rival_skill
+        self.rival_level = rival_level     # 0..1 rival difficulty (race.rival_setup)
         self.track = None
 
 
@@ -78,17 +81,18 @@ class RunState:
     def _plan_heat(self, i):
         seed = (self.seed * 31 + i * 7_919) & 0x3FFFFFFF
         last = i == RUN_HEATS - 1
+        # Every heat is a race against rivals (solo clock runs live in Time
+        # Trial). Heats 3 and 5 add a track modifier on top.
         if last:
             target = Target("place", 1)
         elif i in (2, 4):
-            mod = self.rng.choice(list(MODIFIERS))
-            target = Target("survive", None, mod)
-        elif self.rng.random() < 0.5:
-            target = Target("time")
+            target = Target("place", 2, self.rng.choice(list(MODIFIERS)))
         else:
             target = Target("place", 3 if i < 2 else 2)
-        rivals = 3 if target.kind == "place" else 0
-        return Heat(i, seed, target, rivals, rival_skill=0.72 + i * 0.05)
+        rivals = 3
+        # Rivals start beatable and get faster and cleaner every round.
+        # TODO (TO_DO.md): try higher-tier upgrades pushing this up faster.
+        return Heat(i, seed, target, rivals, rival_level=i / (RUN_HEATS - 1))
 
     @property
     def heat(self):

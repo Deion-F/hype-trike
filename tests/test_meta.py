@@ -1,3 +1,4 @@
+import json
 """Milestone 5: meta-progression (spec §6.3). Acceptance: currency survives an
 app restart; at least one unlock changes the starting experience."""
 import os
@@ -98,3 +99,12 @@ def test_unlocks_are_sidegrades_not_strict_upgrades():
                  or s.land_tolerance < base.land_tolerance or s.grip[DIRT] < base.grip[DIRT]
                  or s.pitch_rate < base.pitch_rate)
         assert worse, f"{v} should trade something away"
+
+
+def test_old_saves_move_to_one_button_throttle_once():
+    from meta.profile import Profile
+    p = Profile({"settings": {"throttle_mode": "classic"}})
+    assert p.settings["throttle_mode"] == "one" and p.settings["settings_v"] == 2
+    again = Profile(json.loads(json.dumps(p.data)) | {"settings": {**p.settings, "throttle_mode": "classic"}})
+    assert again.settings["throttle_mode"] == "classic"    # a later choice sticks
+    assert Profile().settings["throttle_mode"] == "one"
