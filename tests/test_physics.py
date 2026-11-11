@@ -260,3 +260,20 @@ def test_one_button_rough_landing_dumps_heat():
     assert b.temp == 0.0                           # never below cold
     b, _ = _land_at(False, angle=20)               # classic: heat is a cost, untouched
     assert b.temp == 20.0
+
+
+def test_backdrop_scrolls_left_as_the_rider_moves_forward():
+    import pygame
+    if not pygame.display.get_init():
+        pygame.display.init(); pygame.display.set_mode((10, 10))
+    from ui.render import WorldRenderer
+    rd = WorldRenderer(640)
+    rd.far = pygame.Surface((1280, 360)); rd.far.fill((0, 0, 0))
+    rd.mid = pygame.Surface((1280, 360), pygame.SRCALPHA)
+    rd.far.fill((255, 0, 0), (300, 0, 4, 360))        # one red marker stripe
+
+    def marker_x(scroll):
+        s = pygame.Surface((640, 360))
+        rd.draw_backdrop(s, 0, scroll)
+        return [x for x in range(640) if s.get_at((x, 20))[:3] == (255, 0, 0)][0]
+    assert marker_x(100) < marker_x(0)                   # moved left, not right

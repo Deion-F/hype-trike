@@ -73,7 +73,7 @@ class WorldRenderer:
         W = self.far.get_width()
         scroll = cam_x if scroll is None else scroll
         for layer, k in ((self.far, 0.08), (self.mid, 0.4)):
-            off = -int(scroll * k) % (W // 2)
+            off = int(scroll * k) % (W // 2)          # forward = layers slide left
             surf.blit(layer, (-off, 0))
             if W - off < self.width:
                 surf.blit(layer, (W - off, 0))
