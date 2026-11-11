@@ -292,3 +292,27 @@ def test_heat_arc_draws_in_both_throttle_modes():
         sx, sy = rd.bike_screen_pos(b, b.x)
         top = (int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 2))
         assert s.get_at(top)[:3] != (0, 0, 0)           # the arc's top segment is drawn
+
+
+def test_heat_arc_hidden_until_the_boost_zone():
+    import pygame
+    from ui.render import WorldRenderer
+    rd = WorldRenderer(640)
+    b = Bike(flat(50)); b.one_button = True
+    s = pygame.Surface((640, 360)); s.fill((0, 0, 0))
+    b.temp = C.ONE_BOOST_AT - 0.5
+    rd.draw_heat_arc(s, b, b.x, 0)
+    assert pygame.mask.from_threshold(s, (0, 0, 0), (1, 1, 1, 255)).count() == 640 * 360
+
+
+def test_one_button_cools_the_moment_you_let_go_classic_keeps_grace():
+    b = Bike(flat(200)); b.one_button = True
+    b.temp = 20.0
+    b.step(Controls(a=True)); hot = b.temp
+    b.step(Controls())
+    assert b.temp < hot and not b.in_grace          # no grace: cooling starts at once
+    c = Bike(flat(200))
+    c.temp = 20.0
+    c.step(Controls(a=True)); held = c.temp
+    c.step(Controls())
+    assert c.in_grace and c.temp == held            # classic: grace still freezes heat

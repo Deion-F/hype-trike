@@ -433,14 +433,16 @@ class WorldRenderer:
         lights up left to right as heat builds. Segments take their zone colour
         (normal / boost / red window); the unlit rest shows dimmed, so the zone
         edges are always visible. The red window flashes while you're in it."""
-        if bike.state != "ride":
-            return
-        sx, sy = self.bike_screen_pos(bike, cam_x)
-        cx, cy = sx + C.HEAT_ARC_DX, sy + C.HEAT_ARC_DY
         if bike.one_button:
             lo, boost_at, red_at = 0.0, C.ONE_BOOST_AT, C.ONE_SUPER_AT
         else:
             lo, boost_at, red_at = C.TEMP_START, C.TEMP_STABLE_A, 27.0
+        # Hidden below the boost (orange) zone, so it never covers rivals at the
+        # start or while cruising; it appears once the heat starts to matter.
+        if bike.state != "ride" or bike.temp < boost_at:
+            return
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        cx, cy = sx + C.HEAT_ARC_DX, sy + C.HEAT_ARC_DY
         hi = C.TEMP_OVERHEAT
         n = self.HEAT_ARC_SEGS
         a0, a1 = math.radians(172), math.radians(8)          # left, over the helmet, right

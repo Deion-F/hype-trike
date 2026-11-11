@@ -172,7 +172,11 @@ class Bike:
         # down (e.g. while a mouse player re-anchors). Holds at the A cap, so tapping
         # turbo can't keep turbo speed for free, and temperature is frozen meanwhile
         # so tapping can't cool the engine either.
-        if ctl.a or ctl.b:
+        # Classic mode only: one-button mode's sticky anchor moves without letting
+        # go, and there heat should start falling the moment you release.
+        if self.one_button:
+            self.in_grace = False
+        elif ctl.a or ctl.b:
             self._grace = self.stats.throttle_grace
             self.in_grace = False
         else:
