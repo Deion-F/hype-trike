@@ -13,6 +13,10 @@ from track.generator import generate
 
 RUN_HEATS = 6
 
+# Rival level (race.rival_setup, 0..1) per heat. Eases in, then steepens: the
+# three-map target ladder (top 3, top 2, win) needs the mid-run heats to bite.
+RIVAL_LEVELS = [0.0, 0.15, 0.32, 0.68, 0.92, 1.0]
+
 MODIFIERS = {
     "no_coolant": ("No Coolant", "No coolant pads on this track"),
     "double_heat": ("Hot Engine", "Engine heats twice as fast"),
@@ -60,11 +64,13 @@ class Heat:
 
 
 class RunState:
-    def __init__(self, seed=None, vehicle="dirt", livery="flame", start_upgrades=(), themes=None):
+    def __init__(self, seed=None, vehicle="dirt", livery="flame", start_upgrades=(), themes=None,
+                 mode="one"):
         self.seed = seed if seed is not None else random.randrange(1 << 30)
         self.rng = random.Random(self.seed)
         self.vehicle = vehicle
         self.livery = livery
+        self.mode = mode               # throttle mode the run was started in ("one" | "classic")
         self.upgrades = list(start_upgrades)
         self.themes = list(themes) if themes else None
         self.heat_i = 0
@@ -92,7 +98,7 @@ class RunState:
         rivals = 3
         # Rivals start beatable and get faster and cleaner every round.
         # TODO (TO_DO.md): try higher-tier upgrades pushing this up faster.
-        return Heat(i, seed, target, rivals, rival_level=i / (RUN_HEATS - 1))
+        return Heat(i, seed, target, rivals, rival_level=RIVAL_LEVELS[i])
 
     @property
     def heat(self):
@@ -128,6 +134,8 @@ class RunState:
         h.track = g.track
         if self.themes:
             h.track.theme = self.themes[h.index % len(self.themes)]
+        if h.index == RUN_HEATS - 1:
+            h.track.theme = C.LAVA_THEME        # the final heat is always the volcano
         if h.target.kind in ("time", "survive"):
             # Par from the ghost's time with the player's current setup.
             from track.validator import validate
@@ -158,7 +166,7 @@ class RunState:
         elif self.heat_i == RUN_HEATS - 1:
             self.status = "won"
         else:
-            self.pending_offer = offer(self.rng, self.upgrades, 3)
+            self.pending_offer = offer(self.rng, self.upgrades, 3, self.mode)
         return met
 
     def choose(self, upgrade_id):

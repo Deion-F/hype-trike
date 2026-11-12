@@ -179,6 +179,9 @@ class Audio:
             "deny": S(osc(150, 0.16, "square", 0.22, 0.5, f_end=110)),
             "explode": S(mix(noise(1.1, 0.6, 5000, rate_end=250), osc(160, 0.9, "square", 0.25, f_end=30),
                              osc(70, 0.7, "sine", 0.45, f_end=25))),
+            "splash": S(mix(noise(0.3, 0.3, 7000, rate_end=2500), osc(500, 0.18, "sine", 0.18, f_end=180))),
+            "lava": S(mix(noise(0.45, 0.3, 2500, rate_end=800), osc(90, 0.4, "saw", 0.25, f_end=260))),
+            "vent": S(mix(noise(0.5, 0.25, 11000, rate_end=4000), osc(600, 0.3, "sine", 0.15, f_end=250))),
             "bike_drop": S(mix(noise(0.12, 0.35, 2500), osc(110, 0.12, "tri", 0.4, f_end=55))),
         }
         # engine: pulse loops at rising pitch; whole cycles so loops don't click

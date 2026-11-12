@@ -50,12 +50,30 @@ COOL_COAST = 0.05           # per tick when off throttle
 # TEMP_OVERHEAT explodes the bike. The engine starts cold; a crash zeroes the heat.
 ONE_BOOST_AT = 9.0          # start of the boost band (classic A ceiling is 17)
 ONE_COLD_HEAT_MULT = 1.6    # heat_a multiplier below the boost band (~2 s cold -> boost)
-ONE_HEAT_PAD = 5.0          # pads are HEAT pads in one-button mode: +heat (speed, but risk)
+# Heat is shown as HEAT_BARS segments (the arc over the rider); pads and the red
+# window are measured in whole bars so they read straight off the gauge.
+HEAT_BARS = 12
+HEAT_BAR = TEMP_OVERHEAT / HEAT_BARS   # heat per bar (~2.67)
+# Pads are HEAT pads in one-button mode, in three sizes: +1 / +2 / +3 bars
+# (track.tiles.PAD_BARS). Speed, but risk.
 ONE_ROUGH_HEAT_LOSS = 6.0   # rough landings dump this much heat (lost boost / speed)
-ONE_SUPER_AT = 27.0         # start of the red super-boost window (5 heat, ~1.2 s before boom)
+SUPER_BARS = 3              # the red super-boost window is the top 3 bars
+ONE_SUPER_AT = TEMP_OVERHEAT - SUPER_BARS * HEAT_BAR   # = 24 (8 heat, ~1.9 s at the boost heat rate)
+RED_AT = 27.0               # classic mode's red zone on the gauge (turbo nearly overheating)
+VENT_DROP = 4.0             # Radiator vent (one-button): heat drops to this far below the red
 SUPER_BOOST_EXTRA = 3       # extra top speed over turbo while super-boosting
 EXPLODE_EXTRA_TICKS = 100   # explosion lasts this much longer than a normal crash
 EXPLODE_DROP_AT = 0.82      # fraction of the explosion when the new bike touches down
+# Water puddles (any theme but Volcano): a splash that cools the engine and slows you.
+WATER_COOL = 6.0            # heat lost (one-button: also speed, since heat is speed)
+WATER_SPEED_KEEP = 0.75     # speed kept through the splash
+# Volcano theme ("lava" level): the air is hot, so heat rises faster and drains
+# slower, and water puddles are lava pits: a big speed kick and a lot of heat.
+LAVA_THEME = "lava"
+LAVA_HEAT_MULT = 1.35       # heating rate multiplier on the Volcano theme
+LAVA_COOL_MULT = 0.55       # cooling rate multiplier on the Volcano theme
+LAVA_PIT_HEAT = 3 * HEAT_BAR  # heat added by a lava pit (3 bars, like a large pad)
+LAVA_PIT_SPEED = 8          # instant speed over the current cap (bleeds off at the overspeed rate)
 THROTTLE_GRACE_TICKS = 36   # 0.6 s after letting go: speed holds (A cap), temp frozen
 OVERHEAT_TICKS = 150        # engine stall duration
 
@@ -72,8 +90,8 @@ FX_SHAKE = 1.5              # px of horizontal shake at full super boost
 
 # Heat arc worn by the rider (setting "heat_gauge"): centre offset from the
 # bike's ground contact point, and inner radius, in logical px.
-HEAT_ARC_DX = -2
-HEAT_ARC_DY = -37
+HEAT_ARC_DX = -3
+HEAT_ARC_DY = -44
 HEAT_ARC_R = 17
 
 # --- air / landing ---------------------------------------------------------------
@@ -101,6 +119,7 @@ CRASH_TICKS = 130           # thrown off + jog back
 # --- race ------------------------------------------------------------------------------
 COUNTDOWN_TICKS = 180
 START_X = TILE_W * 0.5      # bike starts half a column into the start tile
+START_LINE_DX = 24          # the drawn start line sits this far ahead of START_X (front tyres touch it)
 
 # --- colours (base palette; themes override) ------------------------------------
 WHITE = (255, 255, 255)

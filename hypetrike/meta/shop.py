@@ -12,12 +12,12 @@ PRICES = {
     "vehicle": {"dirt": 0, "trike": 300, "scrambler": 450, "sprinter": 650},
     "livery": {"flame": 0, "ocean": 60, "lime": 60, "violet": 90, "gold": 150, "ghost": 220},
     "kit": {"cool_head": 140, "gyro": 140, "soft_shocks": 180, "track_boots": 120,
-            "radiator": 140, "sponsor": 200, "all_terrain": 160},
-    "theme": {"valley": 0, "desert": 100, "night": 150, "stadium": 200},
+            "radiator": 140, "sponsor": 200, "all_terrain": 160, "quick_steer": 150},
+    "theme": {"valley": 0, "desert": 100, "night": 150, "stadium": 200, "lava": 250},
 }
 
 
-def catalogue(kind):
+def catalogue(kind, mode="one"):
     items = []
     for item_id, price in PRICES[kind].items():
         if kind == "vehicle":
@@ -26,9 +26,13 @@ def catalogue(kind):
             name, desc = LIVERIES[item_id]["name"], "Paint job"
         elif kind == "kit":
             up = UPGRADES[item_id]
-            name, desc = up.name, "Start every run with: " + up.desc
+            name, desc = up.title(mode), "Start every run with: " + up.text(mode)
         else:
             name, desc = THEMES[item_id]["name"], "Track theme pack for runs and quick races"
+            if item_id == "lava":
+                desc = ("Volcano level for quick races and the editor: heat rises faster and "
+                        "cools slower, and puddles are lava pits (speed, lots of heat). "
+                        "Every run's final heat is on the volcano.")
         items.append({"id": item_id, "name": name, "desc": desc, "price": price})
     return items
 

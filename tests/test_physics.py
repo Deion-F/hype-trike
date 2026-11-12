@@ -210,20 +210,48 @@ def test_classic_mode_unchanged_by_one_button_rules():
     assert b.temp == 20.0
 
 
-def test_one_button_pads_are_heat_pads():
-    t = make_track("S" + "." * 60, laps=1)
-    apply_layer(t, 1, "." * 20 + "c")
-    b = Bike(t, lane=1)
-    b.one_button = True
-    for _ in range(2000):
-        before = b.temp
-        ev = b.step(Controls())
-        b.temp = 20.0 if ("heatpad",) not in ev else b.temp   # hold mid-boost heat
-        if ("heatpad",) in ev:
-            assert ("coolant",) not in ev
-            assert abs(b.temp - (before + C.ONE_HEAT_PAD)) < 0.2   # a burst of heat
-            return
-    raise AssertionError("never reached the heat pad")
+def test_one_button_pads_are_heat_pads_in_three_sizes():
+    for ch, bars in (("k", 1), ("c", 2), ("K", 3)):
+        t = make_track("S" + "." * 60, laps=1)
+        apply_layer(t, 1, "." * 20 + ch)
+        b = Bike(t, lane=1)
+        b.one_button = True
+        b.speed = 30
+        for _ in range(2000):
+            b.temp = 12.0                                   # hold mid-boost heat
+            ev = b.step(Controls())
+            if ("heatpad", bars) in ev:
+                assert ("coolant",) not in ev
+                assert abs(b.temp - (12.0 + bars * C.HEAT_BAR)) < 0.2   # +1/+2/+3 bars
+                break
+        else:
+            raise AssertionError(f"never reached the {ch} pad")
+
+
+def test_super_boost_is_the_top_three_heat_bars():
+    assert abs(C.TEMP_OVERHEAT - C.ONE_SUPER_AT - 3 * C.HEAT_BAR) < 1e-9
+    assert abs(C.HEAT_BAR * C.HEAT_BARS - C.TEMP_OVERHEAT) < 1e-9
+    b = Bike(flat(20)); b.one_button = True
+    b.temp = C.ONE_SUPER_AT - 0.01
+    assert b._boost_from(Controls()) == 1
+    b.temp = C.ONE_SUPER_AT
+    assert b._boost_from(Controls()) == 2
+
+
+def test_heat_arc_shows_three_red_bars():
+    import pygame
+    from ui.render import WorldRenderer
+    rd = WorldRenderer(640)
+    n = rd.HEAT_ARC_SEGS
+    red = [i for i in range(n) if (i + 0.5) * C.TEMP_OVERHEAT / n >= C.ONE_SUPER_AT]
+    assert red == [n - 3, n - 2, n - 1]
+
+
+def test_generated_pads_come_in_all_sizes():
+    from track.generator import generate
+    from track.tiles import PAD_S, PAD_L, COOLANT
+    seen = {x for s in range(12) for l in generate(s, 2).track.surface for x in l}
+    assert {PAD_S, COOLANT, PAD_L} <= seen
 
 
 def test_one_button_heat_pad_in_the_red_explodes():
@@ -316,3 +344,109 @@ def test_one_button_cools_the_moment_you_let_go_classic_keeps_grace():
     c.step(Controls(a=True)); held = c.temp
     c.step(Controls())
     assert c.in_grace and c.temp == held            # classic: grace still freezes heat
+
+
+def test_rivals_line_up_level_with_the_player():
+    from race import Race
+    r = Race(flat(50), rivals=3)
+    assert all(rb.x == r.bike.x == C.START_X for rb in r.rivals)
+    assert len({rb.lane for rb in r.rivals} | {r.bike.lane}) == 4
+
+
+def test_tilt_arrow_draws_ahead_of_the_nose_and_grows_with_strength():
+    import pygame
+    if not pygame.display.get_init():
+        pygame.display.init(); pygame.display.set_mode((10, 10))
+    from ui.render import WorldRenderer
+    rd = WorldRenderer(640)
+    b = Bike(flat(50))
+
+    def lit(direction, level, mx):
+        s = pygame.Surface((640, 360)); s.fill((0, 0, 0))
+        rd.draw_tilt_arrow(s, b, b.x, direction, level, mx)
+        sx, _ = rd.bike_screen_pos(b, b.x)
+        n = pygame.mask.from_threshold(s, (0, 0, 0), (1, 1, 1, 255)).count()
+        ahead = pygame.mask.from_threshold(s.subsurface((int(sx) + 20, 0, 40, 360)), (0, 0, 0),
+                                           (1, 1, 1, 255)).count()
+        return 640 * 360 - n, 40 * 360 - ahead
+    assert lit(0, 0, 1)[0] == 0                       # no lean, nothing drawn
+    weak, weak_ahead = lit(-1, 1, 6)
+    strong, _ = lit(-1, 6, 6)
+    assert weak_ahead == weak > 0 and strong > weak   # all ahead of the bike; bigger when stronger
+
+
+# --- water puddles, the Volcano (lava) level, perfect-landing alignment --------------------
+from track.tiles import WATER
+
+
+def _puddle_bike(theme, one=True, temp=20.0, speed=40):
+    t = flat(30)
+    t.surface[1][5] = WATER
+    t.theme = theme
+    b = Bike(t, lane=1); b.one_button = one
+    b.x = 5 * C.TILE_W - 2; b.temp = temp; b.speed = speed
+    return b
+
+
+def test_water_puddle_cools_and_slows_in_both_modes():
+    for one in (True, False):
+        b = _puddle_bike("valley", one)
+        ev = []
+        for _ in range(3):
+            ev += b.step(Controls(a=True))
+        assert ("splash",) in ev
+        assert b.temp < 20.0 - C.WATER_COOL + 1 and b.speed < 40 * C.WATER_SPEED_KEEP + 3
+
+
+def test_lava_pit_kicks_speed_and_adds_lots_of_heat():
+    b = _puddle_bike("lava", one=True, temp=12.0, speed=40)
+    ev = []
+    for _ in range(3):
+        ev += b.step(Controls(a=True))
+    assert ("lava",) in ev and b.temp >= 12.0 + C.LAVA_PIT_HEAT and b.speed > 44
+    hot = _puddle_bike("lava", one=True, temp=C.TEMP_OVERHEAT - 3)
+    for _ in range(3):
+        hot.step(Controls(a=True))
+    assert hot.state == "crash"                        # a pit in the red blows you up
+
+
+def test_volcano_heats_faster_and_cools_slower():
+    def heat_after(theme, ctl, temp, n=120):
+        t = flat(100); t.theme = theme
+        b = Bike(t); b.one_button = True; b.temp = temp
+        for _ in range(n):
+            b.step(ctl)
+        return b.temp
+    assert heat_after("lava", Controls(a=True), 10.0) > heat_after("valley", Controls(a=True), 10.0)
+    assert heat_after("lava", Controls(), 20.0) > heat_after("valley", Controls(), 20.0)
+
+
+def test_perfect_aligned_tracks_the_landing_slope():
+    b = Bike(flat(60)); b.speed = 40
+    b.airborne = True; b.air_ticks = 20; b.h = 60; b.vy = 1.0
+    b.angle = 0.0
+    assert b.perfect_aligned()                         # flat landing, level nose
+    b.angle = 25.0
+    assert not b.perfect_aligned()
+    b.airborne = False
+    assert not b.perfect_aligned()
+
+
+def test_run_final_heat_is_the_volcano():
+    from run.manager import RunState, RUN_HEATS
+    r = RunState(seed=3, themes=["valley", "desert"])
+    r.heat_i = RUN_HEATS - 1
+    assert r.prepare_heat().track.theme == C.LAVA_THEME
+    r.heat_i = 0
+    assert r.prepare_heat().track.theme == "valley"
+
+
+def test_outline_pads_the_sprite_evenly():
+    import pygame
+    if not pygame.display.get_init():
+        pygame.display.init(); pygame.display.set_mode((10, 10))
+    from ui import art
+    img = art.draw_dirt_bike(art.LIVERIES["flame"], 0)
+    out = art.outlined(img, (255, 205, 50), 2)
+    assert out.get_size() == (img.get_width() + 4, img.get_height() + 4)
+    assert pygame.mask.from_surface(out).count() > pygame.mask.from_surface(img).count()

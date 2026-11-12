@@ -17,7 +17,7 @@ import config as C
 from bike import base_stats
 from editor import io as tio
 from track.tiles import (FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS, COOLANT, MUD,
-                         DEBRIS, NONE, DIRT, GRASS, SAND, PROFILES, TILE_NAMES)
+                         DEBRIS, WATER, PAD_S, PAD_L, PAD_BARS, PADS, NONE, DIRT, GRASS, SAND, PROFILES, TILE_NAMES)
 from track.validator import validate
 from race import fmt_time
 from ui import hud, platform_io
@@ -32,10 +32,13 @@ TERR_Y, TERR_H = 40, 56
 LANE_H = 30
 MINI_H = 16
 
-ERASE, HAND = "erase", "hand"
+ERASE, HAND, PAD = "erase", "hand", "pad"   # PAD: the pad tool paints the chosen size
+PAD_CYCLE = (PAD_S, COOLANT, PAD_L)
+PAD_LABEL = {PAD_S: "Pad S", COOLANT: "Pad M", PAD_L: "Pad L"}
 TOOLS = [
     ("t", FLAT, "Flat"), ("t", RAMP_S, "Ramp S"), ("t", RAMP_L, "Ramp L"), ("t", GAP, "Gap"),
-    ("t", WHOOPS, "Whoops"), ("s", COOLANT, "Cool"), ("s", MUD, "Mud"), ("s", DEBRIS, "Barrier"),
+    ("t", WHOOPS, "Whoops"), ("s", PAD, "Pad"), ("s", MUD, "Mud"), ("s", DEBRIS, "Barrier"),
+    ("s", WATER, "Water"),
     ("m", GRASS, "Grass"), ("m", SAND, "Sand"), ("m", DIRT, "Dirt"), ("x", ERASE, "Erase"),
     ("x", HAND, "Move"),
 ]
@@ -50,6 +53,7 @@ class EditorScene(Scene):
         self.scroll = 0.0
         self.zoom = 2
         self.tool = 1                  # index into TOOLS (Ramp S)
+        self.pad_size = COOLANT        # pad tool: size painted (tap the tool again to cycle)
         self.undo_stack = []
         self.dirty = False
         self.saved_name = None
@@ -155,6 +159,8 @@ class EditorScene(Scene):
 
     def paint(self, col, row):
         kind, val, _ = TOOLS[self.tool]
+        if val == PAD:
+            val = self.pad_size
         t = self.track
         if col == 0 and kind in ("t", "s") or (col == 0 and val == ERASE and row == "t"):
             self.say("Section 0 is the start line", (200, 196, 220))
@@ -249,7 +255,8 @@ class EditorScene(Scene):
             if result and result.get("finished"):
                 me.say(f"Playtest finished: {fmt_time(result['time'])}", C.GOOD)
         self.app.set_scene(RaceScene(self.app, self.track.copy(), base_stats("dirt"), sel["livery"],
-                                     rivals=0, on_done=back, title=f"Playtest: {self.track.name}"))
+                                     rivals=0, on_done=back, title=f"Playtest: {self.track.name}",
+                                     context={"kind": "editor"}))
 
     def save(self, then=None):
         path = tio.save_track(self.app.profile, self.track)
@@ -536,6 +543,14 @@ class EditorScene(Scene):
             elif kind == "tap":
                 for i, r in enumerate(tools):
                     if r.collidepoint(x, y):
+                        if self.tool == i and TOOLS[i][1] == PAD:     # tap again: next pad size
+                            k = PAD_CYCLE.index(self.pad_size)
+                            self.pad_size = PAD_CYCLE[(k + 1) % len(PAD_CYCLE)]
+                            n = PAD_BARS[self.pad_size]
+                            one = self.app.profile.settings.get("throttle_mode", "one") == "one"
+                            self.say(f"{TILE_NAMES[self.pad_size]}: "
+                                     + (f"+{n} heat bar{'s' if n > 1 else ''}" if one else "cools the engine"),
+                                     C.ACCENT)
                         self.tool = i
                 if zm.collidepoint(x, y):
                     self.set_zoom(self.zoom - 1)
@@ -727,9 +742,22 @@ class EditorScene(Scene):
         r = max(5, min(12, cw // 3))
         if s == MUD:
             pygame.draw.ellipse(surf, (88, 58, 40), (cx - r - 3, cy - r // 2 - 1, 2 * r + 6, r + 2))
-        elif s == COOLANT:
-            pygame.draw.rect(surf, (30, 90, 140), (cx - r - 2, cy - r + 2, 2 * r + 4, 2 * r - 4), border_radius=3)
-            pygame.draw.polygon(surf, (90, 220, 255), [(cx - r // 2, cy - r // 2), (cx + r // 2, cy), (cx - r // 2, cy + r // 2)])
+        elif s in PAD_BARS:
+            bars = PAD_BARS[s]
+            heat = self.app.profile.settings.get("throttle_mode", "one") == "one"
+            base, chev = ((150, 46, 20), (255, 200, 60)) if heat else ((30, 90, 140), (90, 220, 255))
+            w = 2 * r + 4
+            pygame.draw.rect(surf, base, (cx - w // 2, cy - r + 2, w, 2 * r - 4), border_radius=3)
+            step = w / (bars + 1)
+            for i in range(bars):
+                x = cx - w // 2 + step * (i + 1)
+                pygame.draw.polygon(surf, chev, [(x - 3, cy - 4), (x + 3, cy), (x - 3, cy + 4)])
+        elif s == WATER:
+            lava = self.track.theme == C.LAVA_THEME
+            pygame.draw.ellipse(surf, (200, 60, 20) if lava else (50, 120, 200),
+                                (cx - r - 3, cy - r // 2 - 1, 2 * r + 6, r + 2))
+            pygame.draw.ellipse(surf, (255, 190, 60) if lava else (150, 210, 250),
+                                (cx - r + 1, cy - r // 2 + 1, r, max(2, r // 3)))
         elif s == DEBRIS:
             pygame.draw.rect(surf, (240, 240, 240), (cx - r, cy - r + 2, 2 * r, 2 * r - 4))
             for i in range(-r, r, 5):
@@ -747,7 +775,7 @@ class EditorScene(Scene):
             surf.fill(col, (mini.x + c * k, mini.bottom - max(2, h), max(1, math.ceil(k)), max(2, h)))
             if any(t.surface[l][c] == DEBRIS for l in range(C.LANES)):
                 surf.fill(C.DANGER, (mini.x + c * k, mini.y, max(1, math.ceil(k)), 3))
-            if any(t.surface[l][c] == COOLANT for l in range(C.LANES)):
+            if any(t.surface[l][c] in PADS for l in range(C.LANES)):
                 surf.fill(C.COOL, (mini.x + c * k, mini.y + 3, max(1, math.ceil(k)), 2))
         for c, _ in self.warnings:
             pygame.draw.rect(surf, C.DANGER, (mini.x + c * k - 1, mini.y, max(3, k + 2), MINI_H), 1)
@@ -763,6 +791,8 @@ class EditorScene(Scene):
             if on:
                 pygame.draw.rect(surf, C.ACCENT, r, 2, border_radius=6)
             icon = pygame.Rect(r.x + 4, r.y + 4, r.w - 8, r.h - 22)
+            if val == PAD:
+                val, label = self.pad_size, PAD_LABEL[self.pad_size]
             self._tool_icon(surf, kind, val, icon)
             hud.text(surf, label, (r.centerx, r.bottom - 9), 14, anchor="center")
         button(surf, zm, "-", size=28)

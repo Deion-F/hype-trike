@@ -30,6 +30,10 @@ class Race:
         self.track = track
         self.bike = Bike(track, stats or base_stats(), lane=lane)
         self.countdown = C.COUNTDOWN_TICKS if countdown else 0
+        self.countdown_start = self.countdown
+        self.rival_level = rival_level
+        self.seed = seed
+        self.last_rival_events = []      # [(rival index, events)] from the latest step
         self.time_ticks = 0
         self.lap_times = []
         self._lap_start = 0
@@ -43,8 +47,8 @@ class Race:
             tweaks, ai = rival_setup(rival_level, i, rivals)
             for k, v in tweaks.items():
                 setattr(rs, k, v)
-            rb = Bike(track, rs, lane=lanes[i % len(lanes)],
-                      x=C.START_X - 6 * (i + 1))
+            # Everyone lines up level, front wheels on the start line.
+            rb = Bike(track, rs, lane=lanes[i % len(lanes)], x=C.START_X)
             self.rivals.append(rb)
             self.rival_ai.append(GhostAI(seed=seed * 31 + i, **ai))
             self.rival_finish.append(None)
@@ -79,6 +83,7 @@ class Race:
         return place
 
     def step(self, ctl: Controls):
+        self.last_rival_events = []
         if self.countdown > 0:
             self.countdown -= 1
             return [("go",)] if self.countdown == 0 else []
@@ -96,7 +101,9 @@ class Race:
                 self.bike.state = "done"
                 ev.append(("finish", self.time_ticks))
         for i, (rb, ai) in enumerate(zip(self.rivals, self.rival_ai)):
-            rb.step(ai.controls(rb) if self.rival_finish[i] is None else Controls())
+            rev = rb.step(ai.controls(rb) if self.rival_finish[i] is None else Controls())
+            if rev:
+                self.last_rival_events.append((i, rev))
             if self.rival_finish[i] is None and rb.x >= finish_x:
                 self.rival_finish[i] = self.time_ticks
                 rb.state = "done"

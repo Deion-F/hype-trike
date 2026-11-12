@@ -9,7 +9,7 @@ import random
 
 import config as C
 from bike import Bike, Controls, base_stats
-from track.tiles import MUD, DEBRIS, COOLANT, GAP
+from track.tiles import MUD, DEBRIS, GAP, WATER, PADS
 
 
 class GhostAI:
@@ -82,7 +82,9 @@ class GhostAI:
                     cost += 100 - i * 5
                 elif s == MUD:
                     cost += 10
-                elif s == COOLANT and self.turbo:
+                elif s == WATER:
+                    cost += 8          # a puddle costs speed; a lava pit, a lot of heat
+                elif s in PADS and self.turbo:
                     cost -= 3
             return cost + abs(lane - bike.lane) * 0.5
 

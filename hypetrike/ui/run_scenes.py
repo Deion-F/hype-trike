@@ -16,7 +16,8 @@ CONTINUE_KEYS = (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z)
 def upgrade_summary(ids):
     counts = {}
     for u in ids:
-        counts[u] = counts.get(u, 0) + 1
+        if u in UPGRADES:
+            counts[u] = counts.get(u, 0) + 1
     return [(UPGRADES[u], n) for u, n in counts.items()]
 
 
@@ -26,7 +27,7 @@ def start_run(app):
     start = [sel["start_upgrade"]] if sel.get("start_upgrade") in p.start_upgrades else []
     from meta.shop import active_themes
     run = RunState(vehicle=sel["vehicle"], livery=sel["livery"], start_upgrades=start,
-                   themes=active_themes(p))
+                   themes=active_themes(p), mode=p.settings.get("throttle_mode", "one"))
     app.set_scene(HeatIntroScene(app, run))
 
 
@@ -44,9 +45,9 @@ def draw_progress(surf, run, cx, y):
             pygame.draw.line(surf, (90, 86, 110), (x + 8, y), (x + 18, y), 2)
 
 
-def draw_upgrade_strip(surf, ids, x, y, max_w):
+def draw_upgrade_strip(surf, ids, x, y, max_w, mode="one"):
     for up, n in upgrade_summary(ids):
-        label = up.name + (f" x{n}" if n > 1 else "")
+        label = up.title(mode) + (f" x{n}" if n > 1 else "")
         w = hud.font(16).size(label)[0] + 12
         if x + w > max_w:
             break
@@ -83,7 +84,12 @@ class HeatIntroScene(BackdropScene):
         self.app.set_scene(RaceScene(self.app, h.track, stats, run.livery, rivals=h.rivals,
                                      rival_level=h.rival_level, seed=h.seed, on_done=done,
                                      title=f"Heat {h.index + 1}: {h.track.name}",
-                                     info_lines=info, target=h.target))
+                                     info_lines=info, target=h.target,
+                                     context={"kind": "run", "run_seed": run.seed, "heat": h.index,
+                                              "heats": RUN_HEATS, "target": h.target.describe(),
+                                              "target_kind": h.target.kind, "target_value": h.target.value,
+                                              "modifier": h.target.modifier, "upgrades": list(run.upgrades),
+                                              "mode": run.mode, "vehicle": run.vehicle}))
 
     def draw(self, surf):
         W = self.app.view.width
@@ -100,11 +106,14 @@ class HeatIntroScene(BackdropScene):
         hud.text(surf, h.target.describe(), (W // 2, 154), 24, C.HUD_FG, anchor="center")
         if h.target.modifier:
             hud.text(surf, MODIFIERS[h.target.modifier][1], (W // 2, 178), 20, C.DANGER, anchor="center")
+        elif h.track.theme == C.LAVA_THEME:
+            hud.text(surf, "VOLCANO: heat rises faster, cools slower - lava pits!", (W // 2, 178), 18,
+                     (255, 130, 40), anchor="center")
         if h.rivals:
             hud.text(surf, f"{h.rivals} rivals on track", (W // 2, 200), 18, (200, 196, 220), anchor="center")
         hud.text(surf, "UPGRADES:", (20, 246), 18)
         if run.upgrades:
-            draw_upgrade_strip(surf, run.upgrades, 20, 264, W - 20)
+            draw_upgrade_strip(surf, run.upgrades, 20, 264, W - 20, run.mode)
         else:
             hud.text(surf, "none yet", (20, 266), 16, (170, 166, 190))
         if (self.t // 25) % 2 == 0:
@@ -175,15 +184,15 @@ class UpgradeScene(BackdropScene):
                              border_top_right_radius=10)
             hud.text(surf, up.category.upper(), (rect.centerx, rect.y + 13), 18, (20, 18, 30),
                      anchor="center", shadow=False)
-            hud.text(surf, up.name, (rect.centerx, rect.y + 48), 24, anchor="center")
-            _wrap(surf, up.desc, rect.x + 10, rect.y + 72, rect.w - 20, 18)
+            hud.text(surf, up.title(self.run.mode), (rect.centerx, rect.y + 48), 24, anchor="center")
+            _wrap(surf, up.text(self.run.mode), rect.x + 10, rect.y + 72, rect.w - 20, 18)
             have = self.run.upgrades.count(up.id)
             if have:
                 hud.text(surf, f"owned x{have} (max {up.max_stacks})", (rect.centerx, rect.bottom - 16),
                          15, (200, 196, 220), anchor="center")
             pygame.draw.rect(surf, C.ACCENT if on else (90, 86, 110), rect, 3 if on else 1, border_radius=10)
         if self.run.upgrades:
-            draw_upgrade_strip(surf, self.run.upgrades, 20, 300, W - 20)
+            draw_upgrade_strip(surf, self.run.upgrades, 20, 300, W - 20, self.run.mode)
 
 
 def _wrap(surf, text, x, y, w, size):
@@ -262,6 +271,6 @@ class RunOverScene(BackdropScene):
         hud.text(surf, f"{self.total}", (W // 2 + 154, y + 8), 26, C.ACCENT, anchor="topright")
         hud.text(surf, f"Bank: {self.app.profile.currency} coins", (W // 2, 286), 20, anchor="center")
         if run.upgrades:
-            draw_upgrade_strip(surf, run.upgrades, 20, 308, W - 20)
+            draw_upgrade_strip(surf, run.upgrades, 20, 308, W - 20, run.mode)
         if self.hold <= 0 and (self.t // 25) % 2 == 0:
             hud.text(surf, "TAP TO CONTINUE", (W // 2, 344), 20, C.ACCENT, anchor="center")

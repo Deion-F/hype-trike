@@ -2,7 +2,7 @@
 
 A track is a list of columns, each TILE_W pixels wide.
   * terrain[col]   - column-wide shape tile (flat, ramps, gap, whoops, start)
-  * surface[l][col]- per-lane surface tile (coolant, mud, debris) or NONE
+  * surface[l][col]- per-lane surface tile (coolant, mud, debris, water) or NONE
   * material[col]  - ground material (dirt, grass, sand) for vehicle grip
 Height profiles are precomputed per pixel so physics lookups are cheap and the
 simulation stays deterministic.
@@ -12,15 +12,31 @@ import math
 from config import TILE_W, LANES
 
 # --- tile IDs (spec §5.2) ------------------------------------------------------
-FLAT, RAMP_S, RAMP_L, COOLANT, MUD, DEBRIS, START, GAP, WHOOPS = range(9)
+FLAT, RAMP_S, RAMP_L, COOLANT, MUD, DEBRIS, START, GAP, WHOOPS, WATER, PAD_S, PAD_L = range(12)
+# Elevated structures (plateaus / step-ups / spikes). Unlike the ramps above,
+# these carry height across column boundaries, so they must be chained so the
+# exit height of one column matches the entry height of the next (see
+# edge_heights). Two plateau levels: LO and HI.
+UP_LO, TOP_LO, DOWN_LO, UP_HI, TOP_HI, DOWN_HI, KICK, FIN = range(12, 20)
 NONE = -1
 
 TILE_NAMES = {
-    FLAT: "Flat", RAMP_S: "Ramp S", RAMP_L: "Ramp L", COOLANT: "Coolant",
+    FLAT: "Flat", RAMP_S: "Ramp S", RAMP_L: "Ramp L", COOLANT: "Medium pad",
     MUD: "Mud", DEBRIS: "Debris", START: "Start", GAP: "Gap", WHOOPS: "Whoops",
+    WATER: "Water",       # a lava pit on the Volcano theme
+    PAD_S: "Small pad", PAD_L: "Large pad",
+    UP_LO: "Rise", TOP_LO: "Mesa", DOWN_LO: "Descent", UP_HI: "Rise 2",
+    TOP_HI: "High mesa", DOWN_HI: "Descent 2", KICK: "Mesa kicker", FIN: "Fin",
 }
-TERRAIN_TILES = (FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS)
-SURFACE_TILES = (COOLANT, MUD, DEBRIS)
+# Coolant / heat pads come in three sizes (COOLANT is the medium one). In
+# one-button mode each adds this many heat bars; in classic mode any pad cools.
+PAD_BARS = {PAD_S: 1, COOLANT: 2, PAD_L: 3}
+PADS = tuple(PAD_BARS)
+TERRAIN_TILES = (FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS,
+                 UP_LO, TOP_LO, DOWN_LO, UP_HI, TOP_HI, DOWN_HI, KICK, FIN)
+# Tiles you ride up and launch from (mouse-mode ramp lean, etc.).
+RAMPS = (RAMP_S, RAMP_L, UP_LO, UP_HI, KICK, FIN)
+SURFACE_TILES = (PAD_S, COOLANT, PAD_L, MUD, DEBRIS, WATER)
 
 # --- ground materials ---------------------------------------------------------------
 DIRT, GRASS, SAND = range(3)
@@ -28,6 +44,10 @@ MATERIAL_NAMES = {DIRT: "Dirt", GRASS: "Grass", SAND: "Sand"}
 MATERIALS = (DIRT, GRASS, SAND)
 
 # --- height profiles: polylines of (local_x, height) -----------------------------
+MESA_LO = 28
+MESA_HI = 56
+
+
 def _whoops():
     pts = []
     for x in range(0, TILE_W + 1, 4):
@@ -41,8 +61,27 @@ PROFILES = {
     RAMP_L: [(0, 0), (54, 44), (62, 44), (78, 0), (TILE_W, 0)],
     GAP:    [(0, 0), (2, -70), (TILE_W - 2, -70), (TILE_W, 0)],
     WHOOPS: _whoops(),
+    # Plateaus. Rises climb over most of the column; descents stay level for a
+    # short lip, then slope down: at speed the bike flies off the lip and the
+    # slope is the landing (match it for a PERFECT).
+    UP_LO:   [(0, 0), (60, MESA_LO), (TILE_W, MESA_LO)],
+    TOP_LO:  [(0, MESA_LO), (TILE_W, MESA_LO)],
+    DOWN_LO: [(0, MESA_LO), (16, MESA_LO), (TILE_W, 0)],
+    UP_HI:   [(0, MESA_LO), (60, MESA_HI), (TILE_W, MESA_HI)],
+    TOP_HI:  [(0, MESA_HI), (TILE_W, MESA_HI)],
+    DOWN_HI: [(0, MESA_HI), (16, MESA_HI), (TILE_W, MESA_LO)],
+    # A small kicker sitting on a low plateau.
+    KICK:    [(0, MESA_LO), (48, MESA_LO + 22), (56, MESA_LO + 22), (74, MESA_LO), (TILE_W, MESA_LO)],
+    # A tall, steep spike: hit it with speed or get bucked.
+    FIN:     [(0, 0), (44, 40), (50, 40), (TILE_W, 0)],
 }
 PIT_DEPTH = -70
+
+
+def edge_heights(tile):
+    """(entry height, exit height) of a terrain tile at its column edges."""
+    prof = PROFILES[tile]
+    return prof[0][1], prof[-1][1]
 
 
 def _sample(profile, lx):
@@ -135,20 +174,27 @@ class Track:
         return Track.from_dict(self.to_dict())
 
 
+# One char per terrain tile (track strings, share codes, generator segments).
+# Plateau tiles: u/t/d rise/top/descent at the low level, U/T/D at the high
+# level, k kicker on a low plateau, f fin.
+TERRAIN_CHARS = {".": FLAT, "s": RAMP_S, "L": RAMP_L, "g": GAP, "w": WHOOPS, "S": START,
+                 "u": UP_LO, "t": TOP_LO, "d": DOWN_LO, "U": UP_HI, "T": TOP_HI,
+                 "D": DOWN_HI, "k": KICK, "f": FIN}
+
+
 def make_track(spec, laps=2, name="Static", theme="valley"):
     """Build a track from a compact string, one char per column.
 
-    terrain chars: '.' flat  's' small ramp  'L' large ramp  'g' gap
-                   'w' whoops 'S' start
+    terrain chars: see TERRAIN_CHARS
     Lane overlays are passed as {lane: "string"} via make_track_layers.
     """
-    m = {".": FLAT, "s": RAMP_S, "L": RAMP_L, "g": GAP, "w": WHOOPS, "S": START}
-    return Track([m[c] for c in spec], laps=laps, name=name, theme=theme)
+    return Track([TERRAIN_CHARS[c] for c in spec], laps=laps, name=name, theme=theme)
 
 
 def apply_layer(track, lane, layer):
-    """Overlay chars on a lane: 'c' coolant  'm' mud  'd' debris, else nothing."""
-    m = {"c": COOLANT, "m": MUD, "d": DEBRIS}
+    """Overlay chars on a lane: 'k' / 'c' / 'K' small / medium / large pad,
+    'm' mud, 'd' debris, 'p' water, else nothing."""
+    m = {"c": COOLANT, "k": PAD_S, "K": PAD_L, "m": MUD, "d": DEBRIS, "p": WATER}
     for i, ch in enumerate(layer[: track.ncols]):
         if ch in m:
             track.surface[lane][i] = m[ch]

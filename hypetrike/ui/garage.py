@@ -28,7 +28,7 @@ class GarageScene(BackdropScene):
         return TABS[self.tab][0]
 
     def items(self):
-        return shop.catalogue(self.kind)
+        return shop.catalogue(self.kind, self.app.profile.settings.get("throttle_mode", "one"))
 
     def _focus_selected(self):
         for i, it in enumerate(self.items()):
@@ -174,7 +174,7 @@ class GarageScene(BackdropScene):
                      (200, 196, 220))
             cur = sel.get("start_upgrade")
             from run.upgrades import UPGRADES
-            hud.text(surf, f"Equipped: {UPGRADES[cur].name if cur else 'none'}", (x0 + 12, 186), 22)
+            hud.text(surf, f"Equipped: {UPGRADES[cur].title(self.app.profile.settings.get('throttle_mode', 'one')) if cur else 'none'}", (x0 + 12, 186), 22)
         else:
             from ui.render import WorldRenderer
             if getattr(self, "_theme_prev", (None,))[0] != it["id"]:

@@ -5,7 +5,7 @@ import random
 import pygame
 
 import config as C
-from track.tiles import (PROFILES, GAP, START, COOLANT, MUD, DEBRIS,
+from track.tiles import (PROFILES, GAP, START, COOLANT, MUD, DEBRIS, WATER, PAD_BARS,
                          DIRT, GRASS, SAND, PIT_DEPTH)
 from ui import art
 
@@ -18,14 +18,19 @@ def _shade(c, k):
 
 
 class Particles:
-    def __init__(self):
-        # [x, y, vx, vy, life, max_life, color, size, gravity, grow] in world coords (x=track px)
-        self.items = []
+    MAX = 360
 
-    def emit(self, x, y, vx, vy, life, color, size=2, gravity=0.05, grow=0.0):
-        """grow > 0: a puff that swells by that many px over its life (smoke)."""
-        if len(self.items) < 220:
-            self.items.append([x, y, vx, vy, life, life, color, size, gravity, grow])
+    def __init__(self):
+        # [x, y, vx, vy, life, max_life, color, size, gravity, grow, alpha]
+        # in world coords (x = track px)
+        self.items = []
+        self._puffs = {}          # (diameter, colour, alpha step) -> round soft puff surface
+
+    def emit(self, x, y, vx, vy, life, color, size=2, gravity=0.05, grow=0.0, alpha=0):
+        """grow > 0: a puff that swells by that many px over its life (smoke).
+        alpha > 0: a round, see-through puff that fades out as it dies (dust)."""
+        if len(self.items) < self.MAX:
+            self.items.append([x, y, vx, vy, life, life, color, size, gravity, grow, alpha])
 
     def update(self):
         keep = []
@@ -38,9 +43,27 @@ class Particles:
                 keep.append(p)
         self.items = keep
 
+    def _puff(self, d, col, a):
+        key = (d, col, a)
+        img = self._puffs.get(key)
+        if img is None:
+            if len(self._puffs) > 400:
+                self._puffs.clear()
+            img = pygame.Surface((d, d), pygame.SRCALPHA)
+            pygame.draw.circle(img, (*col, a), (d / 2, d / 2), d / 2)
+            self._puffs[key] = img
+        return img
+
     def draw(self, surf, cam_x):
-        for x, y, _, _, life, ml, col, size, _, grow in self.items:
+        for x, y, _, _, life, ml, col, size, _, grow, alpha in self.items:
             sx = C.BIKE_SCREEN_X + (x - cam_x)
+            if alpha:
+                k = life / ml                                   # 1 -> 0 over its life
+                d = max(2, int(size + grow * (1 - k)))
+                a = int(alpha * min(1.0, k * 1.6)) // 16 * 16   # fade in steps (cache-friendly)
+                if a > 0:
+                    surf.blit(self._puff(d, col, a), (int(sx - d / 2), int(y - d / 2)))
+                continue
             if grow:
                 s = int(size + grow * (1 - life / ml))
                 surf.fill(col, (int(sx - s / 2), int(y - s / 2), s, s))
@@ -82,7 +105,7 @@ class WorldRenderer:
         surf.fill(_shade(th["berm"], 0.85), (0, C.LANE_BASE_Y - 12, self.width, 12))
         surf.fill(_shade(th["berm"], 1.05), (0, C.LANE_BASE_Y - 12, self.width, 2))
 
-    COL_TOP = C.LANE_BASE_Y - 82
+    COL_TOP = C.LANE_BASE_Y - 92   # tallest structure (mesa kicker, 50 px) + art above it
 
     def draw_track(self, surf, track, cam_x, editor_cursor=None):
         """Blit pre-rendered columns (each column is rendered once per track)."""
@@ -167,8 +190,9 @@ class WorldRenderer:
         pygame.draw.rect(surf, (20, 16, 24), (x0, top, x1 - x0 + 1, FRONT_BOTTOM - top))
         for i in range(6):
             pygame.draw.rect(surf, (34, 28, 40), (sx0 + 6 + i * 12, top + 8 + (i % 2) * 6, 6, 3))
-        pygame.draw.rect(surf, (60, 120, 170), (x0, FRONT_BOTTOM - 14, x1 - x0 + 1, 14))
-        pygame.draw.rect(surf, (120, 180, 220), (x0, FRONT_BOTTOM - 14, x1 - x0 + 1, 2))
+        lava = self.theme.get("lava")
+        pygame.draw.rect(surf, art.LAVA_DARK if lava else (60, 120, 170), (x0, FRONT_BOTTOM - 14, x1 - x0 + 1, 14))
+        pygame.draw.rect(surf, art.LAVA_HOT if lava else (120, 180, 220), (x0, FRONT_BOTTOM - 14, x1 - x0 + 1, 2))
         for edge, is_open in ((sx0, open_left), (sx0 + C.TILE_W - 3, open_right)):
             if is_open:
                 continue
@@ -178,20 +202,22 @@ class WorldRenderer:
                 surf.fill((250, 210, 40) if lane % 2 else (30, 30, 30), (edge - 1, y - 2, 4, 4))
 
     def _draw_start(self, surf, sx0):
-        x = sx0 + C.START_X - 4
+        # Checkered line just ahead of where the bikes line up, so every front
+        # tyre sits on it at the start (bike x is the midpoint between wheels).
+        lx = int(sx0 + C.START_X + C.START_LINE_DX)
         for lane in range(C.LANES):
             y0 = C.lane_y(lane)
             for j in range(5):
                 for i in range(2):
                     col = (250, 250, 250) if (i + j) % 2 == 0 else (24, 24, 30)
-                    surf.fill(col, (int(x + i * 4 - lane * 1), int(y0 + j * 4), 4, 4))
-        # gate behind lane 0
-        gx = int(sx0 + C.START_X)
-        pygame.draw.rect(surf, (230, 230, 240), (gx - 30, C.LANE_BASE_Y - 70, 3, 58))
-        pygame.draw.rect(surf, (230, 230, 240), (gx + 30, C.LANE_BASE_Y - 70, 3, 58))
-        pygame.draw.rect(surf, (232, 72, 52), (gx - 32, C.LANE_BASE_Y - 78, 67, 12))
-        for i in range(8):
-            surf.fill((250, 250, 250) if i % 2 else (24, 24, 30), (gx - 28 + i * 8, C.LANE_BASE_Y - 75, 8, 6))
+                    surf.fill(col, (lx + i * 4, int(y0 + j * 4), 4, 4))
+        # gate behind lane 0, its right post on the line (kept inside the column)
+        gx = lx + 4
+        pygame.draw.rect(surf, (230, 230, 240), (gx - 48, C.LANE_BASE_Y - 70, 3, 58))
+        pygame.draw.rect(surf, (230, 230, 240), (gx + 4, C.LANE_BASE_Y - 70, 3, 58))
+        pygame.draw.rect(surf, (232, 72, 52), (gx - 50, C.LANE_BASE_Y - 78, 59, 12))
+        for i in range(7):
+            surf.fill((250, 250, 250) if i % 2 else (24, 24, 30), (gx - 46 + i * 8, C.LANE_BASE_Y - 75, 8, 6))
 
     def _draw_surfaces(self, surf, track, col, sx0):
         for lane in range(C.LANES):
@@ -205,18 +231,23 @@ class WorldRenderer:
                 pygame.draw.ellipse(surf, (88, 58, 40), (sx0 + 8, cy - 6, 64, 13))
                 pygame.draw.ellipse(surf, (110, 76, 52), (sx0 + 16, cy - 4, 40, 7))
                 surf.fill((70, 46, 30), (int(sx0 + 30), int(cy - 1), 6, 2))
-            elif s == COOLANT and getattr(self, "heat_pads", False):
-                # one-button mode: a heat pad (orange plate, flame chevrons)
-                pygame.draw.rect(surf, (150, 46, 20), (sx0 + 12, cy - 6, 56, 13), border_radius=3)
-                pygame.draw.rect(surf, (255, 120, 40), (sx0 + 12, cy - 6, 56, 13), 1, border_radius=3)
-                for i in range(3):
-                    x = sx0 + 20 + i * 15
-                    pygame.draw.polygon(surf, (255, 200, 60), [(x, cy - 4), (x + 8, cy), (x, cy + 4), (x + 3, cy)])
-            elif s == COOLANT:
-                pygame.draw.rect(surf, (30, 90, 140), (sx0 + 12, cy - 6, 56, 13), border_radius=3)
-                for i in range(3):
-                    x = sx0 + 20 + i * 15
-                    pygame.draw.polygon(surf, (90, 220, 255), [(x, cy - 4), (x + 8, cy), (x, cy + 4), (x + 3, cy)])
+            elif s in PAD_BARS:
+                self._draw_pad(surf, sx0, cy, PAD_BARS[s], getattr(self, "heat_pads", False))
+            elif s == WATER and self.theme.get("lava"):
+                # lava pit: glowing crust rim, molten middle, a couple of bubbles
+                pygame.draw.ellipse(surf, (50, 30, 30), (sx0 + 6, cy - 7, 68, 15))
+                pygame.draw.ellipse(surf, art.LAVA_DARK, (sx0 + 9, cy - 5, 62, 11))
+                pygame.draw.ellipse(surf, art.LAVA, (sx0 + 14, cy - 4, 50, 8))
+                pygame.draw.ellipse(surf, art.LAVA_HOT, (sx0 + 24, cy - 2, 26, 4))
+                pygame.draw.circle(surf, art.LAVA_HOT, (int(sx0 + 20), int(cy + 1)), 2)
+                pygame.draw.circle(surf, (255, 240, 180), (int(sx0 + 56), int(cy - 1)), 1)
+            elif s == WATER:
+                # puddle: dark rim, blue water, sky reflection streaks
+                pygame.draw.ellipse(surf, _shade(self.theme["dirt"], 0.7), (sx0 + 6, cy - 7, 68, 15))
+                pygame.draw.ellipse(surf, (52, 110, 170), (sx0 + 9, cy - 5, 62, 11))
+                pygame.draw.ellipse(surf, (80, 150, 210), (sx0 + 14, cy - 4, 46, 7))
+                pygame.draw.line(surf, (200, 230, 255), (sx0 + 22, cy - 2), (sx0 + 36, cy - 2))
+                pygame.draw.line(surf, (170, 215, 250), (sx0 + 44, cy + 1), (sx0 + 52, cy + 1))
             elif s == DEBRIS:
                 # striped barrier (crash window is local x 28..52)
                 bx = sx0 + 30
@@ -227,13 +258,38 @@ class WorldRenderer:
                                                               (bx + min(20, i + 6), cy - 15), (bx + min(20, i + 3), cy - 3)])
                 pygame.draw.rect(surf, (40, 30, 30), (bx, cy - 15, 20, 12), 1)
 
+    # pad plate (base, rim, chevron) colours by size, small -> large
+    HEAT_PAD_COLS = (((170, 70, 24), (255, 150, 60), (255, 215, 90)),
+                     ((150, 46, 20), (255, 120, 40), (255, 200, 60)),
+                     ((130, 24, 16), (255, 70, 30), (255, 245, 150)))
+    COOL_PAD_COLS = ((40, 104, 150), (30, 90, 140), (22, 74, 128))
+
+    def _draw_pad(self, surf, sx0, cy, bars, heat):
+        """Coolant / heat pad, sized by the bars it gives: the plate grows and
+        carries one chevron per bar (1 small, 2 medium, 3 large)."""
+        w = 12 + 15 * bars + (6 if bars == 3 else 0)
+        x0 = sx0 + 40 - w // 2
+        if heat:
+            base, rim, chev = self.HEAT_PAD_COLS[bars - 1]
+        else:
+            base, rim, chev = self.COOL_PAD_COLS[bars - 1], None, (90, 220, 255)
+        pygame.draw.rect(surf, base, (x0, cy - 6, w, 13), border_radius=3)
+        if rim:
+            pygame.draw.rect(surf, rim, (x0, cy - 6, w, 13), 1, border_radius=3)
+            if bars == 3:                                  # large: a hot glow line under it
+                pygame.draw.line(surf, rim, (x0 + 3, cy + 8), (x0 + w - 4, cy + 8))
+        for i in range(bars):
+            x = x0 + 8 + i * 15
+            pygame.draw.polygon(surf, chev, [(x, cy - 4), (x + 8, cy), (x, cy + 4), (x + 3, cy)])
+
     # ------------------------------------------------------------------------
     def bike_screen_pos(self, bike, cam_x):
         sx = C.BIKE_SCREEN_X + (bike.x - cam_x)
         sy = C.lane_y(bike.lane_pos) + C.LANE_SPACING // 2 + 2 - bike.h
         return sx, sy
 
-    def draw_bike(self, surf, bike, cam_x, livery="flame", frame=0, is_player=True):
+    def draw_bike(self, surf, bike, cam_x, livery="flame", frame=0, is_player=True, outline=None):
+        """outline: (colour, width) for a solid outline round the rider and bike."""
         vehicle = bike.stats.vehicle
         sx, sy = self.bike_screen_pos(bike, cam_x)
         if sx < -60 or sx > self.width + 60:
@@ -249,7 +305,10 @@ class WorldRenderer:
         angle = bike.angle
         if bike.wobble:
             angle += math.sin(bike.wobble * 0.9) * 6
-        img, a = self.sprites.rotated(vehicle, livery, frame, angle)
+        if outline:
+            img, a = self.sprites.rotated_outlined(vehicle, livery, frame, angle, *outline)
+        else:
+            img, a = self.sprites.rotated(vehicle, livery, frame, angle)
         art.blit_rotated(surf, img, a, (sx, sy))
         if bike.state == "overheat" and (bike.ticks // 8) % 2 == 0:
             for i in range(3):
@@ -337,10 +396,10 @@ class WorldRenderer:
             surf.blit(art.draw_rider_run(liv, e), (rx - 8, sy - 22))
 
     # -- turbo -----------------------------------------------------------------------
-    # Flame origin in sprite coords: the dirt-bike family's tail pipe (art.draw_dirt_bike);
-    # the trike has no pipe, so it fires from the back of its rear body.
-    EXHAUST = {"trike": (4, 25)}
-    EXHAUST_DEFAULT = (9, 27)
+    # Flame origin in sprite coords: each vehicle's tail pipe (ui/art.py); the
+    # scrambler's high pipe exits higher, the trike's short pipe lower.
+    EXHAUST = {"trike": (2, 31), "scrambler": (3, 25), "sprinter": (4, 28)}
+    EXHAUST_DEFAULT = (5, 28)
 
     def exhaust_pos(self, bike, cam_x):
         """Screen position of the tail pipe and the backward unit vector along the bike."""
@@ -426,7 +485,8 @@ class WorldRenderer:
             self.particles.emit(wx + bx * 6, py + by * 6, bx * self._rng.uniform(1, 2.5) - bike.vx * 0.2,
                                 by * 2 + self._rng.uniform(-0.6, 0.3), self._rng.randint(6, 12), col)
 
-    HEAT_ARC_SEGS = 12
+    HEAT_ARC_SEGS = C.HEAT_BARS
+    HEAT_ARC_DROP = {}               # per-vehicle arc offset (all riders sit at one height now)
 
     def draw_heat_arc(self, surf, bike, cam_x, t):
         """Heat gauge worn by the rider: a segmented arc around the helmet that
@@ -434,7 +494,7 @@ class WorldRenderer:
         (normal / boost / red window); the unlit rest shows dimmed, so the zone
         edges are always visible. The red window flashes while you're in it."""
         if bike.one_button:
-            lo, boost_at, red_at = 0.0, C.ONE_BOOST_AT, C.ONE_SUPER_AT
+            lo, boost_at, red_at = 0.0, C.ONE_BOOST_AT, C.ONE_SUPER_AT   # red = top SUPER_BARS bars
         else:
             lo, boost_at, red_at = C.TEMP_START, C.TEMP_STABLE_A, 27.0
         # Hidden below the boost (orange) zone, so it never covers rivals at the
@@ -442,7 +502,7 @@ class WorldRenderer:
         if bike.state != "ride" or bike.temp < boost_at:
             return
         sx, sy = self.bike_screen_pos(bike, cam_x)
-        cx, cy = sx + C.HEAT_ARC_DX, sy + C.HEAT_ARC_DY
+        cx, cy = sx + C.HEAT_ARC_DX, sy + C.HEAT_ARC_DY + self.HEAT_ARC_DROP.get(bike.stats.vehicle, 0)
         hi = C.TEMP_OVERHEAT
         n = self.HEAT_ARC_SEGS
         a0, a1 = math.radians(172), math.radians(8)          # left, over the helmet, right
@@ -469,6 +529,47 @@ class WorldRenderer:
                    (cx + math.cos(s1) * r0, cy - math.sin(s1) * r0)]
             pygame.draw.polygon(surf, (20, 16, 28), pts, 3)  # dark outline for contrast
             pygame.draw.polygon(surf, col, pts)
+
+    TILT_COL = {-1: ((175, 230, 255), (30, 175, 255)),    # back / nose up: pale -> vivid cyan
+                1: ((255, 210, 160), (255, 100, 25))}     # forward / nose down: pale -> vivid orange
+
+    def draw_tilt_arrow(self, surf, bike, cam_x, direction, level=1, max_level=1):
+        """Lean indicator: a curved arrow just ahead of the bike's nose that turns
+        the way the bike is being rotated (up = lean back, down = lean forward).
+        It follows the bike's angle. Stronger aim = longer, thicker, more vivid."""
+        if not direction or bike.state != "ride":
+            return
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        a = math.radians(bike.angle)
+        ox, oy = 0, -18                                   # pivot: middle of the bike
+        cx = sx + ox * math.cos(a) + oy * math.sin(a)
+        cy = sy - ox * math.sin(a) + oy * math.cos(a)
+        t = level / max_level if max_level > 1 else 0.55
+        span = math.radians(28 + 46 * t)
+        R = 29
+        pale, vivid = self.TILT_COL[direction]
+        col = tuple(int(pale[i] + (vivid[i] - pale[i]) * t) for i in range(3))
+        w = 2 if t < 0.5 else 3
+        # nose up turns counter-clockwise: the arrow runs from low to high
+        s0, s1 = (-span / 2, span / 2) if direction < 0 else (span / 2, -span / 2)
+        n = 8
+        pts = [(cx + R * math.cos(a + s0 + (s1 - s0) * i / n),
+                cy - R * math.sin(a + s0 + (s1 - s0) * i / n)) for i in range(n + 1)]
+        # arrowhead along the tangent at the end
+        e = a + s1
+        tx, ty =(-math.sin(e), -math.cos(e)) if direction < 0 else (math.sin(e), math.cos(e))
+        hx, hy = pts[-1]
+        hs = 5 + 3 * t
+        nx, ny = -ty, tx
+        head = [(hx + tx * hs, hy + ty * hs), (hx + nx * hs * 0.75, hy + ny * hs * 0.75),
+                (hx - nx * hs * 0.75, hy - ny * hs * 0.75)]
+        dark = (20, 16, 28)
+        pygame.draw.lines(surf, dark, False, pts, w + 2)
+        pygame.draw.polygon(surf, dark, head, 3)
+        pygame.draw.lines(surf, col, False, pts, w)
+        for p in pts[1:-1]:
+            pygame.draw.circle(surf, col, p, w / 2)       # fill the joins of the thick line
+        pygame.draw.polygon(surf, col, head)
 
     def draw_speed_lines(self, surf, t, k, hot=False):
         """Screen-wide streaks in the sky and over the ground while boosting.
@@ -505,17 +606,64 @@ class WorldRenderer:
                                 self._rng.uniform(-1.1, -0.5), self._rng.randint(22, 38),
                                 (g, g - 6, g - 4), size=3, gravity=-0.01, grow=7 + 5 * danger)
 
-    def emit_dust(self, bike, cam_x, turbo=False):
-        if bike.airborne or bike.state != "ride" or bike.speed < 6:
-            return
-        sx, sy = self.bike_screen_pos(bike, 0)
+    def _dust_colour(self, bike):
         mat = bike.track.material_at(bike.x)
-        col = _shade(self.mat_col.get(mat, self.theme["dirt"]), 1.15)
-        n = 2 if turbo else 1
-        for _ in range(n):
-            self.particles.emit(bike.x - 14, sy - 2 + self._rng.uniform(-1, 1),
-                                -self._rng.uniform(0.5, 1.5) - bike.vx * 0.3,
-                                -self._rng.uniform(0.2, 0.9), self._rng.randint(12, 22), col)
+        base = self.mat_col.get(mat, self.theme["dirt"])
+        if mat == GRASS:
+            return _shade(base, 0.85), mat
+        pale = (236, 222, 196)                  # dry dust reads lighter than the track
+        return tuple(int(base[i] * 0.45 + pale[i] * 0.55) for i in range(3)), mat
+
+    def emit_dust(self, bike, cam_x, boost=False):
+        """Dust kicked up behind the rear tyre while riding: more and bigger puffs
+        the faster the bike goes, extra while boosting; grass throws less."""
+        if bike.airborne or bike.state != "ride" or bike.speed < 8:
+            return
+        sx, sy = self.bike_screen_pos(bike, cam_x)
+        if sx < -40 or sx > self.width + 40:
+            return
+        col, mat = self._dust_colour(bike)
+        k = min(1.0, bike.speed / 50.0)
+        rate = (0.25 + 0.55 * k) * (1.5 if boost else 1.0) * (0.5 if mat == GRASS else 1.0)
+        r = self._rng
+        while rate > 0:
+            if r.random() < rate:
+                self.particles.emit(bike.x - 14 + r.uniform(-2, 2), sy + 4 + r.uniform(-1, 1),
+                                    -r.uniform(0.3, 1.2) - bike.vx * 0.15, -r.uniform(0.15, 0.7),
+                                    r.randint(16, 30), col, size=3, gravity=0.012,
+                                    grow=4 + 6 * k, alpha=150)
+            rate -= 1
+        if r.random() < 0.18 * k:            # the odd clod of dirt flicked off the knobs
+            self.particles.emit(bike.x - 16, sy + 1, -r.uniform(0.8, 2.0) - bike.vx * 0.2,
+                                -r.uniform(0.8, 1.8), r.randint(12, 20), _shade(col, 0.7), 2, 0.12)
+
+    def emit_landing_dust(self, bike, strength=1.0):
+        """A cloud of dust from both tyres on touchdown; strength 0..1 (fall speed)."""
+        sx, sy = self.bike_screen_pos(bike, 0)
+        col, mat = self._dust_colour(bike)
+        r = self._rng
+        n = int(8 + 18 * strength) // (2 if mat == GRASS else 1)
+        for i in range(n):
+            wheel = -14 if i % 2 else 14
+            side = r.choice((-1, 1))
+            self.particles.emit(bike.x + wheel + r.uniform(-3, 3), sy + 4 + r.uniform(-1, 1),
+                                side * r.uniform(0.3, 1.6 + 1.2 * strength) + bike.vx * 0.25,
+                                -r.uniform(0.1, 0.5 + 0.6 * strength), r.randint(20, 36), col,
+                                size=4 + int(3 * strength), gravity=0.015,
+                                grow=8 + 10 * strength, alpha=180)
+        for _ in range(int(3 + 5 * strength)):  # dirt clods
+            self.particles.emit(bike.x + r.uniform(-16, 16), sy + 2, r.uniform(-1.6, 1.6) + bike.vx * 0.2,
+                                -r.uniform(1.0, 2.2) * (0.6 + strength * 0.6), r.randint(14, 24),
+                                _shade(col, 0.7), 2, 0.14)
+
+    def emit_splash(self, bike, col, hi):
+        """Puddle splash / lava spatter: droplets thrown up and forward from the tyres."""
+        sx, sy = self.bike_screen_pos(bike, 0)
+        r = self._rng
+        for i in range(18):
+            self.particles.emit(bike.x + r.uniform(-14, 16), sy + 3,
+                                r.uniform(-1.5, 2.0) + bike.vx * 0.3, -r.uniform(1.2, 3.2),
+                                r.randint(14, 26), hi if i % 3 == 0 else col, 2, 0.16)
 
     def emit_burst(self, bike, color, n=14, spread=2.5):
         sx, sy = self.bike_screen_pos(bike, 0)

@@ -45,6 +45,27 @@ Build only: `tools/build_web.sh` → `hypetrike/build/web/` (a static site).
 .venv/bin/python tools/shots.py OUT_DIR    # headless art sheet + screenshots
 ```
 
+### Race recordings and difficulty tuning
+
+Every race is recorded by default (Settings → Race recordings) to `recordings/`
+(git-ignored) when running from the checkout. Watch them under **REPLAYS** on
+the title screen: a replay re-simulates the race from its recorded inputs.
+
+```bash
+.venv/bin/python tools/tuning.py summary     # one line per recording
+.venv/bin/python tools/tuning.py report      # difficulty per run heat vs the goal curve
+.venv/bin/python tools/tuning.py show ID     # event timeline of one race
+.venv/bin/python tools/tuning.py sim         # simulated runs: target-met % per heat
+.venv/bin/python tools/tuning.py archive --note "what changed"   # after tuning
+```
+
+The `difficulty-tuner` agent (`.claude/agents/difficulty-tuner.md`, Sonnet 5.5)
+runs this loop: it reads the recordings and sims, tunes rivals and track
+generation toward the curve, archives what it used, and logs the pass in
+`docs/tuning_log.md`. Ask Claude Code to "use the difficulty-tuner agent" after
+playing a few runs. Replays only match the game version they were recorded on,
+so archive recordings once a tuning pass has changed the game.
+
 The setup used `uv venv .venv && uv pip install pygame-ce pygbag pytest`.
 
 ```

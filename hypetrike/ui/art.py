@@ -25,8 +25,20 @@ SKIN = (240, 190, 150)
 VISOR = (40, 50, 70)
 BOOT = (40, 36, 44)
 
-SPR_W, SPR_H = 52, 44
-CONTACT = (26, 38)   # ground contact point (midpoint between wheels) in sprite
+SPR_W, SPR_H = 52, 54
+CONTACT = (26, 48)   # ground contact point (midpoint between wheels) in sprite
+OLD_PAD = 10         # sprites drawn on the old 52x44 grid sit this far down the new one
+DIRT_PAD = 4         # the dirt-bike family is drawn on a 52x50 grid, this far down
+HAND = (35, 17)      # dirt-bike family: rider's glove on the grip (52x50 grid)
+HANDGUARD = (37, 17) # where the coloured hand guard sits
+
+
+def _pad(s, pad=OLD_PAD):
+    """Place a sprite drawn on a shorter grid onto the full sprite grid, so its
+    contact point lands on CONTACT (headroom for the helmet goes on top)."""
+    out = pygame.Surface((SPR_W, SPR_H), pygame.SRCALPHA)
+    out.blit(s, (0, pad))
+    return out
 
 
 def _wheel(s, cx, cy, r, frame, dark=False):
@@ -43,6 +55,50 @@ def _wheel(s, cx, cy, r, frame, dark=False):
         pygame.draw.line(s, RIM, (cx - d, cy - d), (cx + d, cy + d))
         pygame.draw.line(s, RIM, (cx - d, cy + d), (cx + d, cy - d))
     pygame.draw.rect(s, METAL, (cx - 1, cy - 1, 2, 2))
+
+
+def _mx_wheel(s, cx, cy, frame, knobby=True, disc=False, r=8, block=2, n=12, far=False):
+    """Big spoked off-road wheel: tall knobby tyre, thin rim, wire spokes and a
+    hub. frame 0/1 turns the knobs and spokes half a step (rolling feel).
+    block: tread block size in px (3 = the scrambler's chunky blocks).
+    far: the far-side wheel of the trike, drawn darker."""
+    tire = (18, 16, 22) if far else TIRE
+    rim = (110, 110, 122) if far else RIM
+    pygame.draw.circle(s, tire, (cx, cy), r)
+    if knobby:
+        for i in range(n):
+            a = (i + frame * 0.5) * 2 * math.pi / n
+            kr = r - (block - 2) * 0.5                          # big blocks sit a bit lower
+            kx, ky = cx + kr * math.cos(a), cy + kr * math.sin(a)
+            s.fill(tire, (int(round(kx - block / 2)), int(round(ky - block / 2)), block, block))
+    else:
+        pygame.draw.circle(s, (54, 50, 62), (cx, cy), r, 1)        # slick: sidewall sheen
+    pygame.draw.circle(s, rim, (cx, cy), r - 3, 1)                 # rim
+    spoke = (96, 96, 108) if far else (140, 140, 154)
+    for i in range(6):
+        a = (i + frame * 0.5) * math.pi / 3
+        pygame.draw.line(s, spoke, (cx, cy), (cx + (r - 4) * math.cos(a), cy + (r - 4) * math.sin(a)))
+    if disc:
+        pygame.draw.circle(s, (150, 150, 162), (cx, cy), 3)
+        pygame.draw.circle(s, (96, 96, 110), (cx, cy), 3, 1)
+    pygame.draw.circle(s, METAL, (cx, cy), 2)
+    s.fill((210, 210, 220), (cx, cy - 1, 1, 1))
+
+
+def _mag_wheel(s, cx, cy, frame, accent, disc=False):
+    """Sprinter (supermoto): slick tyre on a cast five-spoke wheel with a
+    coloured rim stripe."""
+    r = 8
+    pygame.draw.circle(s, TIRE, (cx, cy), r)
+    pygame.draw.circle(s, (58, 54, 66), (cx, cy), r, 1)                # slick sidewall
+    pygame.draw.circle(s, (60, 62, 74), (cx, cy), r - 2)               # cast wheel
+    pygame.draw.circle(s, accent, (cx, cy), r - 2, 1)                  # rim stripe
+    for i in range(5):
+        a = (i + frame * 0.5) * 2 * math.pi / 5
+        pygame.draw.line(s, (170, 172, 186), (cx, cy), (cx + 5 * math.cos(a), cy + 5 * math.sin(a)), 2)
+    if disc:
+        pygame.draw.circle(s, (150, 150, 162), (cx, cy), 3, 1)
+    pygame.draw.circle(s, (40, 40, 50), (cx, cy), 1)
 
 
 def _rider(s, liv, bob, hip, hand, lean=0):
@@ -69,76 +125,187 @@ def _rider(s, liv, bob, hip, hand, lean=0):
     pygame.draw.line(s, liv["body"], (hc[0] - 4, hc[1] - 2), (hc[0] + 2, hc[1] - 5), 2)
 
 
-def _knobs(s, cx, cy, r, frame):
-    for i in range(10):
-        a = (i + frame * 0.5) * math.pi / 5
-        s.fill(TIRE, (int(cx + (r + 1) * math.cos(a)), int(cy + (r + 1) * math.sin(a)), 2, 2))
+def _bars(s, dark, fy):
+    """Fork clamp + handlebar in the dark livery colour, ending at the grip."""
+    pygame.draw.line(s, METAL, (35, fy(18)), (36, fy(16)), 2)
+    pygame.draw.line(s, dark, (33, fy(17)), (37, fy(14)), 2)
 
 
 def draw_dirt_bike(liv, frame, rider=True, style="dirt"):
-    s = pygame.Surface((SPR_W, SPR_H), pygame.SRCALPHA)
+    """Dirt-bike family, drawn on the 52x50 grid. All three share the frame,
+    engine, big wheels, coloured bars + hand guard and a front fender that hugs
+    the tyre (nothing pokes out ahead). Each has its own character:
+      dirt      - motocross: upswept tail, flat seat into low shrouds, knobbies
+      scrambler - retro trail: round tank, bench seat, high pipe, round headlight,
+                  fork gaiters, rear rack, chunky block tread
+      sprinter  - supermoto: cast wheels on slicks, belly pan, number fairing
+                  with a screen, sharp tail spoiler, rider tucked in"""
+    s = pygame.Surface((SPR_W, SPR_H - DIRT_PAD), pygame.SRCALPHA)
     bob = frame
-    rw, fw, wy = (14, 38, 37)
+    body, dark = liv["body"], liv["dark"]
+    rw, fw, wy = 12, 40, 40
+    fy = lambda y: y + bob + 2                      # sprung parts move with the suspension
+    # rear shock, swingarm, fork (wheels are unsprung)
+    pygame.draw.line(s, (200, 170, 60), (19, fy(25)), (22, 33), 2)            # shock spring
+    pygame.draw.line(s, METAL, (rw, wy), (23, 33), 3)                        # swingarm
+    pygame.draw.line(s, (90, 92, 106), (fw, wy), (35, fy(19)), 3)            # fork leg
+    pygame.draw.line(s, (196, 198, 210), (fw - 1, wy - 3), (36, fy(20)), 1)  # stanchion shine
     if style == "sprinter":
-        rw, fw = 15, 39
-    # swingarm, fork
-    pygame.draw.line(s, METAL, (rw, wy), (24, 30), 3)
-    pygame.draw.line(s, METAL, (fw, wy), (34, 20 + bob), 3)
-    _wheel(s, rw, wy, 7, frame)
-    _wheel(s, fw, wy, 7, frame)
-    # engine + exhaust
-    pygame.draw.rect(s, ENGINE, (21, 27 + bob, 10, 7))
-    pygame.draw.line(s, METAL, (22, 33 + bob), (10, 27 + bob), 2)
-    # rear fender + seat
-    pygame.draw.polygon(s, liv["body"], [(6, 24 + bob), (20, 22 + bob), (22, 26 + bob), (8, 27 + bob)])
-    pygame.draw.polygon(s, SEAT, [(12, 22 + bob), (25, 20 + bob), (26, 22 + bob), (13, 24 + bob)])
-    # tank / shroud
-    pygame.draw.polygon(s, liv["body"], [(24, 21 + bob), (34, 19 + bob), (37, 23 + bob), (31, 28 + bob), (24, 27 + bob)])
-    pygame.draw.polygon(s, liv["dark"], [(26, 26 + bob), (31, 28 + bob), (36, 23 + bob), (33, 25 + bob)])
-    # number plate + front fender
-    pygame.draw.polygon(s, (250, 250, 250), [(34, 18 + bob), (38, 17 + bob), (39, 22 + bob), (36, 23 + bob)])
-    pygame.draw.polygon(s, liv["body"], [(35, 28 + bob), (45, 27 + bob), (44, 29 + bob), (36, 30 + bob)])
-    # handlebar
-    pygame.draw.line(s, METAL, (33, 17 + bob), (36, 15 + bob), 2)
+        _mag_wheel(s, rw, wy, frame, body)
+        _mag_wheel(s, fw, wy, frame, body, disc=True)
+    elif style == "scrambler":
+        _mx_wheel(s, rw, wy, frame, block=3, n=10)
+        _mx_wheel(s, fw, wy, frame, block=3, n=10, disc=True)
+        # rubber fork gaiters
+        for k in range(3):
+            pygame.draw.line(s, (40, 38, 46), (fw - 2 - k, wy - 4 - k * 2), (fw - k, wy - 4 - k * 2), 2)
+    else:
+        _mx_wheel(s, rw, wy, frame)
+        _mx_wheel(s, fw, wy, frame, disc=True)
+    # engine block with fins, skid plate under it
+    pygame.draw.rect(s, ENGINE, (21, fy(25), 10, 8), border_radius=2)
+    for i in range(3):
+        s.fill((96, 98, 114), (27, fy(26 + i * 2), 4, 1))
+    pygame.draw.line(s, (40, 40, 50), (21, fy(33)), (31, fy(33)), 2)
     if style == "scrambler":
-        # knobby tyres, high front fender, rear rack, headlight
-        _knobs(s, rw, wy, 7, frame)
-        _knobs(s, fw, wy, 7, frame)
-        pygame.draw.polygon(s, liv["dark"], [(36, 21 + bob), (46, 18 + bob), (46, 20 + bob), (38, 23 + bob)])
-        pygame.draw.line(s, METAL, (4, 21 + bob), (13, 20 + bob), 2)
-        pygame.draw.rect(s, (255, 240, 170), (38, 19 + bob, 3, 3))
+        _scrambler_body(s, body, dark, fy)
     elif style == "sprinter":
-        # tail spoiler, racing stripe, low screen
-        pygame.draw.polygon(s, liv["dark"], [(3, 19 + bob), (10, 22 + bob), (6, 24 + bob)])
-        pygame.draw.line(s, (250, 250, 250), (24, 23 + bob), (36, 21 + bob), 1)
-        pygame.draw.polygon(s, (150, 210, 240), [(36, 16 + bob), (40, 13 + bob), (40, 17 + bob)])
+        _sprinter_body(s, body, dark, fy)
+    else:
+        _mx_body(s, body, dark, fy)
+    # front fender hugging the tyre (an arc, nothing sticking out ahead)
+    if style == "scrambler":                         # high fender: a little gap above the tyre
+        pygame.draw.arc(s, body, (fw - 11, wy - 13, 22, 22), math.radians(40), math.radians(140), 3)
+        pygame.draw.line(s, METAL, (fw - 2, wy - 12), (fw - 1, wy - 9), 1)    # fender stay
+    else:
+        pygame.draw.arc(s, body, (fw - 11, wy - 11, 22, 22), math.radians(25), math.radians(150), 3)
+    _bars(s, dark, fy)
     if rider:
-        _rider(s, liv, bob, hip=(21, 19), hand=(35, 15), lean=1 if style == "sprinter" else 0)
-    return s
+        _rider(s, liv, bob, hip=(20, 18), hand=HAND, lean=2 if style == "sprinter" else 0)
+    _handguard(s, body, dark, bob)
+    return _pad(s, DIRT_PAD)
+
+
+def _mx_body(s, body, dark, fy):
+    # exhaust: header from the cylinder, under the seat, out to a silencer
+    pygame.draw.line(s, (150, 120, 90), (30, fy(28)), (22, fy(24)), 2)
+    pygame.draw.line(s, (150, 120, 90), (22, fy(24)), (14, fy(23)), 2)
+    pygame.draw.polygon(s, METAL, [(5, fy(20)), (15, fy(21)), (15, fy(25)), (6, fy(24))])
+    s.fill((40, 40, 50), (4, fy(21), 2, 3))                                  # tail pipe
+    # upswept tail / side panel, running forward under the seat
+    pygame.draw.polygon(s, body, [(1, fy(15)), (12, fy(18)), (23, fy(20)), (22, fy(24)),
+                                  (14, fy(22)), (5, fy(18))])
+    pygame.draw.line(s, dark, (5, fy(18)), (14, fy(22)), 1)
+    # long flat seat into the tank
+    pygame.draw.polygon(s, SEAT, [(8, fy(16)), (27, fy(17)), (28, fy(19)), (12, fy(19))])
+    # tank / radiator shroud: a low wedge, no beak
+    pygame.draw.polygon(s, body, [(25, fy(18)), (34, fy(16)), (36, fy(19)), (33, fy(25)),
+                                  (26, fy(25)), (23, fy(21))])
+    pygame.draw.polygon(s, dark, [(27, fy(24)), (33, fy(24)), (35, fy(20)), (31, fy(22))])
+    pygame.draw.line(s, (255, 255, 255), (26, fy(19)), (33, fy(17)), 1)      # graphic stripe
+    # number plate flush with the fork crown
+    pygame.draw.polygon(s, (245, 245, 245), [(35, fy(15)), (38, fy(16)), (37, fy(21)), (35, fy(20))])
+
+
+def _scrambler_body(s, body, dark, fy):
+    # high pipe: up from the cylinder along the side to a short silencer under the seat
+    pygame.draw.line(s, (170, 140, 100), (30, fy(27)), (25, fy(21)), 2)
+    pygame.draw.line(s, (170, 140, 100), (25, fy(21)), (15, fy(19)), 2)
+    pygame.draw.polygon(s, (190, 192, 204), [(4, fy(17)), (15, fy(18)), (15, fy(21)), (5, fy(21))])
+    pygame.draw.line(s, (120, 122, 134), (6, fy(19)), (14, fy(19)), 1)      # heat shield slots
+    s.fill((40, 40, 50), (3, fy(18), 2, 3))
+    # rear rack + short tail
+    pygame.draw.polygon(s, dark, [(3, fy(15)), (13, fy(16)), (13, fy(18)), (5, fy(18))])
+    pygame.draw.line(s, METAL, (1, fy(13)), (12, fy(14)), 2)
+    s.fill(METAL, (2, fy(13), 1, 3))
+    # flat bench seat with a stitched seam
+    pygame.draw.rect(s, (66, 46, 36), (10, fy(14), 15, 4), border_radius=2)
+    pygame.draw.line(s, (110, 82, 60), (11, fy(15)), (23, fy(15)), 1)
+    # round teardrop tank with a knee pad
+    pygame.draw.ellipse(s, body, (22, fy(14), 14, 9))
+    pygame.draw.ellipse(s, dark, (25, fy(19), 7, 4))
+    s.fill((255, 255, 255), (27, fy(15), 5, 1))                               # tank shine
+    # round headlight on the forks
+    pygame.draw.circle(s, METAL, (39, fy(17)), 3)
+    pygame.draw.circle(s, (255, 240, 170), (39, fy(17)), 2)
+
+
+def _sprinter_body(s, body, dark, fy):
+    # under-seat silencer
+    pygame.draw.line(s, (150, 120, 90), (30, fy(28)), (16, fy(24)), 2)
+    pygame.draw.polygon(s, METAL, [(5, fy(20)), (15, fy(21)), (15, fy(24)), (6, fy(23))])
+    s.fill((40, 40, 50), (4, fy(21), 2, 2))
+    # low tail with a sharp spoiler at the very back
+    pygame.draw.polygon(s, body, [(3, fy(16)), (14, fy(18)), (24, fy(20)), (22, fy(23)), (6, fy(19))])
+    pygame.draw.polygon(s, dark, [(0, fy(11)), (5, fy(15)), (3, fy(17)), (1, fy(15))])
+    # thin seat, low tank with twin racing stripes
+    pygame.draw.polygon(s, SEAT, [(10, fy(16)), (26, fy(17)), (27, fy(19)), (12, fy(19))])
+    pygame.draw.polygon(s, body, [(25, fy(18)), (34, fy(17)), (36, fy(20)), (32, fy(25)), (24, fy(23))])
+    pygame.draw.line(s, (250, 250, 250), (25, fy(20)), (34, fy(18)), 1)
+    pygame.draw.line(s, (250, 250, 250), (25, fy(22)), (33, fy(20)), 1)
+    # belly pan under the engine
+    pygame.draw.polygon(s, dark, [(20, fy(31)), (31, fy(31)), (29, fy(34)), (22, fy(34))])
+    # number fairing + low screen, flush with the forks
+    pygame.draw.polygon(s, (245, 245, 245), [(35, fy(15)), (38, fy(16)), (37, fy(21)), (35, fy(20))])
+    pygame.draw.polygon(s, (150, 210, 240), [(36, fy(13)), (38, fy(11)), (38, fy(15))])
+
+
+def _handguard(s, body, dark, bob):
+    """Coloured MX hand guard + bar end just ahead of the glove."""
+    gx, gy = HANDGUARD
+    pygame.draw.polygon(s, body, [(gx, gy - 3 + bob), (gx + 3, gy - 2 + bob),
+                                  (gx + 3, gy + 1 + bob), (gx, gy + 2 + bob)])
+    s.fill(dark, (gx + 3, gy - 2 + bob, 1, 3))
 
 
 def draw_trike(liv, frame, rider=True):
-    s = pygame.Surface((SPR_W, SPR_H), pygame.SRCALPHA)
+    """Trike, on the 52x50 grid like the dirt-bike family: a heavy three-wheeler
+    on fat balloon knobbies (far rear wheel peeking out behind), a rounded
+    body with a rear rack, a fender hugging the front tyre, coloured bars and
+    hand guard. The rider sits upright."""
+    s = pygame.Surface((SPR_W, SPR_H - DIRT_PAD), pygame.SRCALPHA)
     bob = frame
-    wy = 35
-    # far-side rear wheel (darker, offset), then near rear + front balloon tyres
-    _wheel(s, 15, wy - 2, 8, frame, dark=True)
-    pygame.draw.line(s, METAL, (14, wy), (26, 28), 3)
-    pygame.draw.line(s, METAL, (40, wy + 1), (35, 19 + bob), 3)
-    _wheel(s, 12, wy, 8, frame)
-    _wheel(s, 40, wy + 1, 7, frame)
-    pygame.draw.rect(s, ENGINE, (21, 26 + bob, 12, 8))
-    # chunky body + rack
-    pygame.draw.polygon(s, liv["body"], [(3, 22 + bob), (22, 20 + bob), (24, 25 + bob), (4, 27 + bob)])
-    pygame.draw.line(s, METAL, (3, 20 + bob), (14, 19 + bob), 2)
-    pygame.draw.polygon(s, SEAT, [(12, 20 + bob), (26, 18 + bob), (27, 21 + bob), (13, 22 + bob)])
-    pygame.draw.polygon(s, liv["body"], [(25, 19 + bob), (36, 18 + bob), (41, 24 + bob), (33, 28 + bob), (25, 27 + bob)])
-    pygame.draw.polygon(s, liv["dark"], [(27, 26 + bob), (33, 28 + bob), (40, 24 + bob), (36, 25 + bob)])
-    pygame.draw.polygon(s, liv["body"], [(36, 27 + bob), (48, 26 + bob), (47, 29 + bob), (38, 30 + bob)])
-    pygame.draw.line(s, METAL, (33, 16 + bob), (37, 14 + bob), 2)
+    body, dark = liv["body"], liv["dark"]
+    rw, fw, wy = 12, 41, 40
+    fy = lambda y: y + bob + 2
+    # far rear wheel, axle and swingarm, fork
+    _mx_wheel(s, rw + 10, wy - 3, frame, r=9, block=3, n=10, far=True)
+    pygame.draw.arc(s, dark, (rw - 2, wy - 16, 24, 24), math.radians(20), math.radians(110), 3)   # far fender
+    pygame.draw.line(s, METAL, (rw, wy), (24, 33), 4)
+    pygame.draw.line(s, (90, 92, 106), (fw, wy), (36, fy(19)), 4)
+    pygame.draw.line(s, (196, 198, 210), (fw - 1, wy - 4), (37, fy(20)), 1)
+    _mx_wheel(s, rw, wy, frame, r=9, block=3, n=10)
+    _mx_wheel(s, fw, wy, frame, r=8, block=2, n=12, disc=True)
+    # engine, skid plate, short exhaust out the back under the rack
+    pygame.draw.rect(s, ENGINE, (20, fy(24), 13, 9), border_radius=2)
+    for i in range(3):
+        s.fill((96, 98, 114), (28, fy(25 + i * 2), 4, 1))
+    pygame.draw.line(s, (40, 40, 50), (20, fy(33)), (32, fy(33)), 2)
+    pygame.draw.line(s, (150, 120, 90), (21, fy(29)), (6, fy(26)), 2)
+    pygame.draw.rect(s, METAL, (3, fy(24), 7, 4), border_radius=1)
+    s.fill((40, 40, 50), (2, fy(25), 2, 2))
+    # wide rear fender over the near fat wheel, a slim tail and a rack on top
+    pygame.draw.arc(s, body, (rw - 12, wy - 13, 24, 24), math.radians(20), math.radians(170), 4)
+    pygame.draw.polygon(s, body, [(4, fy(18)), (22, fy(18)), (24, fy(22)), (8, fy(22))])
+    pygame.draw.line(s, dark, (8, fy(22)), (23, fy(22)), 1)
+    pygame.draw.line(s, METAL, (1, fy(15)), (12, fy(15)), 2)
+    s.fill(METAL, (2, fy(15), 1, 4))
+    s.fill(METAL, (11, fy(15), 1, 3))
+    # bench seat
+    pygame.draw.rect(s, SEAT, (11, fy(15), 16, 4), border_radius=2)
+    # rounded front body / tank, no nose point
+    pygame.draw.polygon(s, body, [(25, fy(18)), (33, fy(16)), (37, fy(18)), (37, fy(22)),
+                                  (33, fy(26)), (25, fy(25))])
+    pygame.draw.polygon(s, dark, [(27, fy(24)), (33, fy(24)), (36, fy(21)), (31, fy(22))])
+    pygame.draw.line(s, (255, 255, 255), (26, fy(19)), (33, fy(17)), 1)
+    pygame.draw.circle(s, (255, 240, 170), (37, fy(20)), 1)                  # small headlight
+    # front fender hugging the tyre
+    pygame.draw.arc(s, body, (fw - 11, wy - 11, 22, 22), math.radians(25), math.radians(150), 3)
+    _bars(s, dark, fy)
     if rider:
-        _rider(s, liv, bob, hip=(21, 18), hand=(36, 14), lean=-1)
-    return s
+        _rider(s, liv, bob, hip=(20, 18), hand=HAND, lean=-1)
+    _handguard(s, body, dark, bob)
+    return _pad(s, DIRT_PAD)
 
 
 DRAWERS = {"dirt": draw_dirt_bike, "trike": draw_trike,
@@ -195,6 +362,30 @@ class SpriteCache:
             self._rot[key] = pygame.transform.rotate(self.vehicle(vehicle, livery, frame, rider), a)
         return self._rot[key], a
 
+    def rotated_outlined(self, vehicle, livery, frame, angle, color, width=1):
+        """Rotated frame with an outline (player marker, perfect-landing glow)."""
+        img, a = self.rotated(vehicle, livery, frame, angle)
+        key = (vehicle, livery, frame, True, a, color, width)
+        out = self._rot.get(key)
+        if out is None:
+            out = outlined(img, color, width)
+            self._rot[key] = out
+        return out, a
+
+
+def outlined(img, color, width=1):
+    """A copy of img with a solid outline of `width` px around its silhouette.
+    The result is 2*width larger, padded evenly, so its centre stays put."""
+    w, h = img.get_size()
+    out = pygame.Surface((w + 2 * width, h + 2 * width), pygame.SRCALPHA)
+    sil = pygame.mask.from_surface(img).to_surface(setcolor=(*color, 255), unsetcolor=(0, 0, 0, 0))
+    for dx in range(-width, width + 1):
+        for dy in range(-width, width + 1):
+            if (dx or dy) and abs(dx) + abs(dy) <= width + 1:
+                out.blit(sil, (width + dx, width + dy))
+    out.blit(img, (width, width))
+    return out
+
 
 def blit_rotated(dst, img_rot, angle_deg, contact_screen):
     """Blit a rotated sprite so that the CONTACT point lands on contact_screen."""
@@ -225,7 +416,16 @@ THEMES = {
                     far=(70, 76, 110), mid=(60, 64, 90), berm=(130, 92, 64),
                     dirt=(160, 110, 72), grass=(90, 160, 80), sand=(214, 188, 128),
                     wall=(96, 64, 46), stands=True, stars=False, cactus=False),
+    # "lava" level: hot air (heat rises faster, cools slower), puddles are lava pits
+    "lava": dict(name="Volcano", sky=((36, 8, 18), (170, 60, 30)),
+                 far=(54, 30, 36), mid=(66, 40, 40), berm=(84, 54, 46),
+                 dirt=(104, 74, 62), grass=(96, 90, 76), sand=(150, 116, 92),
+                 wall=(58, 38, 36), stands=False, stars=False, cactus=False, lava=True),
 }
+
+LAVA = (255, 110, 30)
+LAVA_HOT = (255, 210, 80)
+LAVA_DARK = (190, 40, 20)
 
 
 def _shade(c, k):
@@ -255,9 +455,45 @@ def build_backdrop(theme, width, height=360):
         pts.append((x, int(y)))
     pts.append((W, height))
     pygame.draw.polygon(far, th["far"], pts)
+    if th.get("lava"):
+        # three volcanoes with glowing craters and lava running down
+        for i in range(3):
+            cx = (i * 2 + 1) * W // 6 + rng.randrange(-30, 30)
+            top, base, half = 72 + rng.randrange(20), 170, 110 + rng.randrange(30)
+            pygame.draw.polygon(far, _shade(th["far"], 0.8),
+                                [(cx - half, base), (cx - 16, top), (cx + 16, top), (cx + half, base)])
+            pygame.draw.ellipse(far, LAVA, (cx - 16, top - 4, 32, 8))
+            pygame.draw.ellipse(far, LAVA_HOT, (cx - 9, top - 2, 18, 4))
+            for k in (-1, 1):
+                x, y = cx + k * 8, top + 2
+                while y < base - 10:
+                    nx, ny = x + k * rng.randrange(2, 6), y + rng.randrange(6, 12)
+                    pygame.draw.line(far, LAVA_DARK, (x, y), (nx, ny), 3)
+                    pygame.draw.line(far, LAVA, (x, y), (nx, ny), 1)
+                    x, y = nx, ny
+            for j in range(4):         # smoke plume
+                pygame.draw.circle(far, _shade(th["sky"][0], 1.6 + j * 0.2),
+                                   (cx + j * 9, top - 14 - j * 14), 9 + j * 3)
+        for _ in range(60):            # embers in the sky
+            far.fill(rng.choice((LAVA, LAVA_HOT)), (rng.randrange(W), rng.randrange(160), 1, 1))
 
     mid = pygame.Surface((W, height), pygame.SRCALPHA)
-    if th["cactus"]:
+    if th.get("lava"):
+        # jagged black rock with glowing cracks
+        pts = [(0, 232)]
+        for x in range(0, W + 1, 8):
+            pts.append((x, int(184 - 10 * math.sin(x * 2 * math.pi / W * 6) - (x // 8 % 3) * 3)))
+        pts.append((W, 232))
+        pygame.draw.polygon(mid, th["mid"], pts)
+        for i in range(18):
+            x = i * W // 18 + rng.randrange(30)
+            y = 192 + rng.randrange(10)
+            pygame.draw.line(mid, LAVA_DARK, (x, y), (x + 6, y + 5), 2)
+            pygame.draw.line(mid, LAVA, (x + 6, y + 5), (x + 3, y + 10), 1)
+        for i in range(10):            # rocks
+            x = i * W // 10 + rng.randrange(40)
+            pygame.draw.polygon(mid, _shade(th["mid"], 0.7), [(x, 202), (x + 6, 190), (x + 14, 194), (x + 18, 202)])
+    elif th["cactus"]:
         pts = [(0, 230)]
         for x in range(0, W + 1, 8):
             pts.append((x, int(190 - 12 * math.sin(x * 2 * math.pi / W * 5))))

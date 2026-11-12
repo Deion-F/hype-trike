@@ -11,16 +11,20 @@
    Failing segments are softened (gaps filled, debris removed) and the track
    is re-checked. If that fails, it regenerates from a derived seed.
 
+Segments can also build elevated structures from plateau tiles (see
+track.tiles.TERRAIN_CHARS): tabletops, two-tier step-ups, kickers on a mesa,
+rows of steep fins. Every segment starts and ends at ground level.
+
 Later depths add ground-material zones (grass, sand) where the unlockable
 vehicles grip better (decision 0.4).
 """
 import random
 
 import config as C
-from track.tiles import (Track, FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS,
-                         COOLANT, MUD, DEBRIS, NONE, DIRT, GRASS, SAND)
+from track.tiles import (Track, FLAT, START, GAP, COOLANT, MUD, DEBRIS, WATER, NONE,
+                         DIRT, GRASS, SAND, PAD_S, PAD_L, PADS, TERRAIN_CHARS, edge_heights)
 
-T = {".": FLAT, "s": RAMP_S, "L": RAMP_L, "g": GAP, "w": WHOOPS, "S": START}
+T = TERRAIN_CHARS
 
 
 class Segment:
@@ -50,10 +54,14 @@ LIBRARY = [
     Segment("whoops", "..wwww..", 2, weight=0.45, min_depth=1),
     Segment("mud patch", "......", 1, hazards=((2, MUD, 1, 2), (3, MUD, 1, 2))),
     Segment("barrier", "......", 2, hazards=((3, DEBRIS, 1, 2),)),
+    # Water puddles (lava pits on the Volcano theme): ride round them or splash through.
+    Segment("puddles", "......", 1, weight=0.8, hazards=((1, WATER, 1, 2), (4, WATER, 1, 2))),
+    Segment("splashdown", "..s.....", 2, heat_discount=2, weight=0.7,
+            hazards=((4, WATER, 1, 2), (5, WATER, 1, 2)), min_depth=1),
     # --- medium ----------------------------------------------------------------
     Segment("pit hop", "..sg....", 2, runway=3, heat_discount=3, min_depth=0),
     Segment("pit jump", "..L.g....", 2, runway=3, heat_discount=4, min_depth=0),
-    Segment("triple", ".s.s.s...", 3, heat_discount=6, min_depth=1),
+    Segment("triple", ".s...s...s...", 3, heat_discount=6, min_depth=1),
     Segment("tabletop pair", "..LL.....", 3, runway=2, heat_discount=5, min_depth=1),
     Segment("long whoops", ".wwwwwwww..", 3, weight=0.35, min_depth=2),
     Segment("slalom", "........", 3, hazards=((1, DEBRIS, 1, 2), (4, DEBRIS, 1, 2), (7, DEBRIS, 1, 2)),
@@ -68,6 +76,27 @@ LIBRARY = [
             hazards=((3, MUD, 1, 1), (9, DEBRIS, 1, 2)), min_depth=3),
     Segment("mud jump", "....L.g....", 4, runway=2, heat_discount=4,
             hazards=((0, MUD, 2, 3), (1, MUD, 2, 3)), min_depth=3),
+    # --- structures (plateaus, step-ups, fins) ---------------------------------
+    # u/t/d: rise / top / descent of a low mesa; U/T/D the same one level up;
+    # k: kicker on a low mesa; f: steep fin. Columns indexes below are offsets.
+    Segment("tabletop", "..utttd...", 2, runway=2, heat_discount=2, weight=1.1),
+    Segment("fin", "..f....", 2, runway=2, heat_discount=2),
+    Segment("long mesa", "..utttttd...", 2, heat_discount=2, weight=0.8,
+            hazards=((4, MUD, 1, 2),), min_depth=1),
+    Segment("step-up", "..utttUTTDd...", 3, runway=2, heat_discount=4, min_depth=1, weight=1.2),
+    Segment("fin row", ".f.....f.....f.....", 3, runway=2, heat_discount=5, min_depth=1),
+    Segment("mesa jump", "..L.uttd...", 3, runway=3, heat_discount=4, min_depth=1),
+    Segment("mesa kicker", "..uttkttd...", 3, runway=2, heat_discount=4, min_depth=1),
+    Segment("muddy mesa", "..utttttd...", 3, heat_discount=2, min_depth=2,
+            hazards=((3, MUD, 1, 2), (5, DEBRIS, 1, 2))),
+    Segment("twin peaks", "..uUTDtUTDd....", 4, runway=2, heat_discount=6, min_depth=2),
+    Segment("stair kicker", "..utkUTTDd....", 4, runway=3, heat_discount=5, min_depth=3),
+    Segment("skyway", "..uUTTTTDd....", 4, runway=2, heat_discount=4, min_depth=2,
+            hazards=((4, DEBRIS, 1, 2), (6, MUD, 1, 2))),
+    Segment("fin gauntlet", ".ff.....f.....ff......", 4, runway=3, heat_discount=7, min_depth=2, weight=0.7),
+    Segment("mesa canyon", "..utttd.g.....", 4, runway=4, heat_discount=5, min_depth=3, weight=0.7),
+    Segment("summit", "..utUTTDtkd...f....", 5, runway=3, heat_discount=8, min_depth=3, weight=0.7,
+            hazards=((5, MUD, 1, 2),)),
 ]
 
 THEME_BY_DEPTH = ["valley", "desert", "night", "stadium", "desert", "night", "stadium", "valley"]
@@ -192,7 +221,7 @@ def _assemble(rng, depth, modifiers):
         for c in range(6, len(terrain)):
             if rng.random() < 0.35:
                 for lane in rng.sample(range(C.LANES), 2):
-                    free = sum(1 for l in range(C.LANES) if surface[l][c] in (NONE, COOLANT))
+                    free = sum(1 for l in range(C.LANES) if surface[l][c] == NONE or surface[l][c] in PADS)
                     if surface[lane][c] == NONE and free > 1:
                         surface[lane][c] = MUD
     # finishing straight back to the start line
@@ -202,6 +231,8 @@ def _assemble(rng, depth, modifiers):
     track = Track([T[c] for c in terrain], surface, None, laps=2,
                   name=_name(rng, depth), theme=THEME_BY_DEPTH[depth % len(THEME_BY_DEPTH)])
     _materials(rng, track, depth, modifiers)
+    # which library segment each column came from (recordings / tuning reports)
+    track.meta["segments"] = [s or "runway" for s in seg_of_col] + ["finish"] * 3
     track.rebuild()
     return track
 
@@ -213,7 +244,8 @@ def _place_coolant(rng, terrain, surface, start):
         return False
     col = rng.choice(cols)
     for lane in rng.sample(range(C.LANES), rng.randint(1, 2)):
-        surface[lane][col] = COOLANT
+        r = rng.random()               # pad size: small / medium / large
+        surface[lane][col] = PAD_S if r < 0.4 else COOLANT if r < 0.75 else PAD_L
     return True
 
 
@@ -246,19 +278,36 @@ def _soften(track, col):
             track.terrain[c] = FLAT
             changes += 1
         for lane in range(C.LANES):
-            if track.surface[lane][c] in (DEBRIS, MUD):
+            if track.surface[lane][c] in (DEBRIS, MUD, WATER):
                 track.surface[lane][c] = NONE
                 changes += 1
         if track.material[c] != DIRT:
             track.material[c] = DIRT
             changes += 1
     if changes == 0:
-        # Nothing obvious (e.g. ramp into ramp): flatten the crash column.
-        c = col % n
-        if track.terrain[c] not in (FLAT, START):
-            track.terrain[c] = FLAT
-            changes += 1
+        # Nothing obvious (e.g. ramp into ramp): flatten the crash column, or
+        # the whole elevated structure around it so no wall is left behind.
+        for c in range(col - 2, col + 1):
+            c %= n
+            if track.terrain[c] in (FLAT, START):
+                continue
+            for s in _structure(track, c):
+                track.terrain[s] = FLAT
+                changes += 1
+            break
     return changes
+
+
+def _structure(track, col):
+    """Columns of the elevated structure containing col (just col for a
+    tile that starts and ends at ground level)."""
+    n = track.ncols
+    lo = hi = col
+    while edge_heights(track.terrain[lo])[0] != 0 and lo > 0:
+        lo -= 1
+    while edge_heights(track.terrain[hi])[1] != 0 and hi < n - 1:
+        hi += 1
+    return range(lo, hi + 1)
 
 
 _ADJ = ["Dusty", "Rattle", "Thunder", "Gravel", "Hyper", "Crooked", "Sunset", "Mad",

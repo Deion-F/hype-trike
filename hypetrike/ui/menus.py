@@ -134,8 +134,10 @@ class TitleScene(BackdropScene):
                           action=lambda: self.app.set_scene(__import__("editor.ui", fromlist=["x"]).EditorScene(self.app))))
         items.append(dict(label="GARAGE", sub=f"{self.app.profile.currency} coins - unlocks & loadout",
                           action=lambda: self.app.set_scene(__import__("ui.garage", fromlist=["x"]).GarageScene(self.app))))
+        items.append(dict(label="REPLAYS", sub="Watch your recorded races",
+                          action=lambda: self.app.set_scene(__import__("ui.replays", fromlist=["x"]).ReplayListScene(self.app))))
         items.append(dict(label="SETTINGS", action=lambda: self.app.set_scene(SettingsScene(self.app))))
-        self.menu = Menu(items, top=86, height=31, gap=3, width=250)
+        self.menu = Menu(items, top=82, height=29, gap=2, width=250)
 
     def new_run(self):
         from ui.run_scenes import start_run
@@ -161,6 +163,7 @@ class TitleScene(BackdropScene):
         self.app.set_scene(RaceScene(self.app, tr, base_stats(sel["vehicle"]), sel["livery"],
                                      rivals=3, title=tr.name, seed=seed,
                                      info_lines=[f"Seed {seed}  Depth {depth}"],
+                                     context={"kind": "quick", "depth": depth, "vehicle": sel["vehicle"]},
                                      on_done=lambda r: self.app.set_scene(TitleScene(self.app))))
 
     def time_trial(self):
@@ -185,6 +188,8 @@ class TitleScene(BackdropScene):
                                      title=f"Time Trial: {tr.name}", seed=seed,
                                      target=Target("time", par),
                                      info_lines=[f"Seed {seed}  Depth {depth}"],
+                                     context={"kind": "trial", "depth": depth, "par": par,
+                                              "vehicle": sel["vehicle"]},
                                      on_done=lambda r: self.app.set_scene(TitleScene(self.app))))
 
     def _race(self, rivals):
@@ -201,7 +206,9 @@ class TitleScene(BackdropScene):
             self.app.set_scene(TitleScene(self.app))
         self.app.set_scene(RaceScene(self.app, tr, base_stats(sel["vehicle"]),
                                      sel["livery"], rivals=rivals, on_done=done,
-                                     title=tr.name))
+                                     title=tr.name,
+                                     context={"kind": "exhibition" if rivals else "practice",
+                                              "vehicle": sel["vehicle"]}))
 
     def frame(self, inp):
         self.menu.handle(inp, self.app.view.width, self.app.audio)
@@ -227,8 +234,13 @@ class TitleScene(BackdropScene):
         hint = ("Z hold: heat builds into boost - don't hit the red!  arrows lean/lane" if one
                 else "Z throttle  X turbo  arrows lean/lane")
         if self.app.input.mouse_enabled:
-            hint = ("Mouse: hold/tap to heat, cursor steers from home - hold still to move home"
-                    if one else "Mouse: L throttle  R turbo - click, then drag back/fwd to lean, up/down for lanes")
+            hover = self.app.profile.settings.get("mouse_lanes", "hover") == "hover"
+            if hover:
+                hint = ("Mouse: hold/tap to heat, point at a lane to ride it, back/fwd of home leans"
+                        if one else "Mouse: L throttle  R turbo - point at a lane to ride it, drag back/fwd to lean")
+            else:
+                hint = ("Mouse: hold/tap to heat, cursor steers from home - hold still to move home"
+                        if one else "Mouse: L throttle  R turbo - click, then drag back/fwd to lean, up/down for lanes")
         hud.text(surf, hint, (10, C.VIEW_H - 10), 16, (200, 196, 220), anchor="bottomleft")
 
 
@@ -245,6 +257,9 @@ SETTING_ROWS = [
     ("mouse_steer", "Mouse lean", [("angle", "Aim angle"), ("hold", "Hold lean"), (False, "Off")]),
     ("heat_gauge", "Heat gauge", [("both", "Rider + bar"), ("bike", "On rider"), ("bar", "Bottom bar")]),
     ("mouse_wheelie", "Mouse wheelie", [("ramps", "Ramps only"), ("anywhere", "Anywhere")]),
+    ("mouse_lanes", "Mouse lanes", [("hover", "Follow cursor"), ("drag", "Drag from home")]),
+    ("lane_guide", "Mouse lane dots", [(False, "Off"), (True, "On")]),
+    ("record_races", "Race recordings", [(True, "On"), (False, "Off")]),
     ("sfx_vol", "Sound effects", SLIDER),
     ("music_vol", "Music", SLIDER),
     ("smooth", "Desktop scaling", [(False, "Sharp"), (True, "Smooth")]),
@@ -260,7 +275,10 @@ class SettingsScene(BackdropScene):
 
     def _rows(self):
         W = self.app.view.width
-        return [pygame.Rect(W // 2 - 170, 56 + i * 29, 340, 26) for i in range(len(SETTING_ROWS) + 1)]
+        # 360 px tall canvas: pitch shrinks so every row and BACK stay on screen
+        n = len(SETTING_ROWS) + 1
+        pitch = min(29, (C.VIEW_H - 54) // n)
+        return [pygame.Rect(W // 2 - 170, 50 + i * pitch, 340, pitch - 2) for i in range(n)]
 
     @staticmethod
     def _bar(r):
@@ -338,16 +356,17 @@ class SettingsScene(BackdropScene):
     def draw(self, surf):
         W = self.app.view.width
         self.draw_bg(surf)
-        hud.text(surf, "SETTINGS", (W // 2, 32), 40, C.ACCENT, anchor="center")
+        hud.text(surf, "SETTINGS", (W // 2, 26), 36, C.ACCENT, anchor="center")
         st = self.app.profile.settings
         rows = self._rows()
+        fs = min(20, rows[0].h + 1)              # text shrinks with the row pitch
         for i, (key, label, opts) in enumerate(SETTING_ROWS):
             r = rows[i]
             on = i == self.sel
             pygame.draw.rect(surf, (78, 70, 110) if on else (46, 42, 66), r, border_radius=6)
             if on:
                 pygame.draw.rect(surf, C.ACCENT, r, 2, border_radius=6)
-            hud.text(surf, label, (r.x + 12, r.centery), 22, anchor="midleft")
+            hud.text(surf, label, (r.x + 12, r.centery), fs, anchor="midleft")
             if opts == SLIDER:
                 v = float(st.get(key, 1.0))
                 bar = self._bar(r)
@@ -359,8 +378,8 @@ class SettingsScene(BackdropScene):
                 pygame.draw.circle(surf, (20, 18, 30), (kx, bar.centery), 8)
                 pygame.draw.circle(surf, C.HUD_FG, (kx, bar.centery), 6)
                 txt = f"{int(round(v * 100))}%" if v > 0 else "Off"
-                hud.text(surf, txt, (r.right - 12, r.centery), 22, C.ACCENT, anchor="midright")
+                hud.text(surf, txt, (r.right - 12, r.centery), fs, C.ACCENT, anchor="midright")
             else:
                 val = dict(opts).get(st.get(key), str(st.get(key)))
-                hud.text(surf, f"< {val} >", (r.right - 12, r.centery), 22, C.ACCENT, anchor="midright")
+                hud.text(surf, f"< {val} >", (r.right - 12, r.centery), fs, C.ACCENT, anchor="midright")
         button(surf, rows[-1], "BACK", self.sel == len(SETTING_ROWS))

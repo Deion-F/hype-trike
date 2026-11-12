@@ -13,15 +13,15 @@ import re
 import zlib
 
 import config as C
-from track.tiles import (Track, FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS,
-                         COOLANT, MUD, DEBRIS, NONE, DIRT, GRASS, SAND)
+from track.tiles import (TERRAIN_CHARS, Track, FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS,
+                         COOLANT, MUD, DEBRIS, WATER, NONE, DIRT, GRASS, SAND, PAD_S, PAD_L)
 
 PREFIX = "HT1-"
 MIN_COLS, MAX_COLS = 8, 400
-THEMES = ("valley", "desert", "night", "stadium")
+THEMES = ("valley", "desert", "night", "stadium", "lava")
 
-TERRAIN_CH = {FLAT: ".", RAMP_S: "s", RAMP_L: "L", START: "S", GAP: "g", WHOOPS: "w"}
-SURF_CH = {NONE: ".", COOLANT: "c", MUD: "m", DEBRIS: "d"}
+TERRAIN_CH = {v: k for k, v in TERRAIN_CHARS.items()}
+SURF_CH = {NONE: ".", COOLANT: "c", MUD: "m", DEBRIS: "d", WATER: "p", PAD_S: "k", PAD_L: "K"}
 MAT_CH = {DIRT: "d", GRASS: "g", SAND: "s"}
 _inv = lambda d: {v: k for k, v in d.items()}  # noqa: E731
 CH_TERRAIN, CH_SURF, CH_MAT = _inv(TERRAIN_CH), _inv(SURF_CH), _inv(MAT_CH)

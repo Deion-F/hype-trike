@@ -14,11 +14,12 @@ class View:
         return pos
 
 
-def make(mode="one", wheelie="anywhere"):
+def make(mode="one", wheelie="anywhere", lanes="drag"):
     if not pygame.display.get_init():
         pygame.display.init(); pygame.display.set_mode((10, 10))
     inp = I.InputManager(View())
-    inp.settings = {"mouse_steer": "angle", "throttle_mode": mode, "mouse_wheelie": wheelie}
+    inp.settings = {"mouse_steer": "angle", "throttle_mode": mode, "mouse_wheelie": wheelie,
+                    "mouse_lanes": lanes}
     inp.race_mode = True
     return inp
 
@@ -165,3 +166,84 @@ def test_ramps_only_wheelie_leans_on_the_ramp(monkeypatch):
     assert inp.anchor == home and inp.mouse_lean < 0 and c.left  # wheelie off the lip
     bike.x = 6 * C.TILE_W + 40                                   # just before the ramp
     m.move(300 - 60, 200); assert I.InputManager._ground_lean_locked(inp, bike) is False
+
+
+def test_lane_dots_are_off_by_default_and_toggle_on(monkeypatch):
+    from meta.profile import DEFAULTS
+    assert DEFAULTS["settings"]["lane_guide"] is False
+    inp, bike = make(), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    m.press(300, 200); tick(inp, bike)
+    lane_ys = [int(inp.lane_center_y(l)) for l in range(C.LANES) if l != bike.lane]
+
+    def dots_drawn():
+        s = pygame.Surface((640, 360)); s.fill((0, 0, 0))
+        inp.draw_mouse_guide(s, (170, 250))
+        return any(s.get_at((300, y))[:3] != (0, 0, 0) for y in lane_ys)
+    assert not dots_drawn()
+    inp.settings["lane_guide"] = True
+    assert dots_drawn()
+
+
+def test_tilt_reports_direction_and_air_aim_strength(monkeypatch):
+    inp, bike = make(), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    m.press(300, 200); c = tick(inp, bike)
+    assert inp.tilt(c, bike) == (0, 0, 1)
+    m.move(300 - 60, 200); c = tick(inp, bike)                  # ground: lean back, one level
+    assert inp.tilt(c, bike) == (-1, 1, 1)
+    bike.airborne = True
+    m.move(300 + 70, 200); c = tick(inp, bike)                  # air: strong forward aim
+    d, lvl, mx = inp.tilt(c, bike)
+    assert d == 1 and mx == I.AIM_MAX_STEPS and lvl >= 3
+    # keys / touch: a single level from the held direction
+    inp2 = make()
+    c2 = I.Controls(left=True)
+    assert inp2.tilt(c2, bike) == (-1, 1, 1)
+
+
+def lane_screen_y(lane):
+    return C.lane_y(lane) + C.LANE_SPACING / 2
+
+
+def test_hover_lanes_are_the_default():
+    from meta.profile import DEFAULTS
+    assert DEFAULTS["settings"]["mouse_lanes"] == "hover"
+
+
+def test_hover_lanes_follow_the_cursor_without_a_click(monkeypatch):
+    for mode in ("one", "classic"):
+        inp, bike = make(mode, lanes="hover"), Bike(static_track())
+        m = Mouse(monkeypatch, inp)
+        assert bike.lane == 1
+        tick(inp, bike, 3)
+        assert bike.lane == 1                         # cursor hasn't moved this race: no yank
+        m.move(300, lane_screen_y(3)); tick(inp, bike, 4)
+        assert bike.lane == 3                         # hovering lane 3, no button held
+        m.move(300, lane_screen_y(0) - 40); tick(inp, bike, 4)
+        assert bike.lane == 0                         # above the track: top lane
+        m.move(300, 359); tick(inp, bike, 4)
+        assert bike.lane == C.LANES - 1               # below the track: front lane
+
+
+def test_hover_lanes_have_hysteresis_and_keys_take_over(monkeypatch):
+    inp, bike = make(lanes="hover"), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    edge = C.lane_y(2)                                # border between lanes 1 and 2
+    m.move(300, edge - 1); tick(inp, bike, 3)
+    assert bike.lane == 1
+    m.move(300, edge + 1); tick(inp, bike, 3)
+    assert bike.lane == 1                             # just past the edge: stays
+    m.move(300, edge + I.HOVER_HYST + 2); tick(inp, bike, 3)
+    assert bike.lane == 2
+    inp.handle(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_UP, mod=0, unicode="", scancode=0))
+    tick(inp, bike, 3)
+    assert bike.lane == 1                             # the key wins until the mouse moves again
+
+
+def test_hover_lanes_still_lean_from_home(monkeypatch):
+    inp, bike = make(lanes="hover"), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    m.press(300, lane_screen_y(1)); tick(inp, bike)
+    m.move(300 - 60, lane_screen_y(1)); c = tick(inp, bike)
+    assert c.left and bike.lane == 1

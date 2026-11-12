@@ -30,7 +30,9 @@ class RaceScene(Scene):
 
     def __init__(self, app, track, stats, livery="flame", rivals=0, on_done=None,
                  title="", info_lines=None, rival_level=0.5, seed=0,
-                 target=None):
+                 target=None, context=None, replay=None):
+        """context: what this race is, for the recording (run heat, quick race...).
+        replay: a recording dict to play back instead of reading input."""
         super().__init__(app)
         self.track = track
         self.stats = stats
@@ -40,7 +42,20 @@ class RaceScene(Scene):
         self.info_lines = info_lines or []
         self.target = target
         self.race = Race(track, stats, rivals=rivals, rival_level=rival_level, seed=seed)
-        self.race.bike.one_button = app.profile.settings.get("throttle_mode") == "one"
+        self.replay = replay
+        if replay is not None:
+            import replay as rp
+            self.race.bike.one_button = replay["race"]["one_button"]
+            self._replay_ctl = rp.unrle(replay["inputs"])
+            self._replay_i = 0
+            self.replay_fast = False
+        else:
+            self.race.bike.one_button = app.profile.settings.get("throttle_mode") == "one"
+        self.recorder = None
+        self.recording_path = None
+        if replay is None and app.profile.settings.get("record_races", True):
+            from replay import Recorder
+            self.recorder = Recorder(self.race, livery, context, app.profile.settings)
         self.renderer = WorldRenderer(app.view.width, track.theme)
         self.renderer.heat_pads = self.race.bike.one_button   # pads draw as heat pads
         self.popups = hud.Popups()
@@ -59,6 +74,8 @@ class RaceScene(Scene):
         self.fx_boost = 0.0         # 0..1 eased "speed feel" from boosting (any level)
         self.fx_super = 0.0         # 0..1 eased extra feel from super boost
         self.bg_scroll = 0.0        # backdrop parallax position (runs ahead while boosting)
+        self.tilt = (0, 0, 1)       # (direction, level, max level) for the lean arrow
+        self._air_prev = {}         # id(bike) -> (airborne, vy) last tick, for landing dust
         app.audio.music(None)
 
     def on_resize(self):
@@ -70,6 +87,8 @@ class RaceScene(Scene):
         for k in inp.keys_down:
             if k in (pygame.K_ESCAPE, pygame.K_p, pygame.K_AC_BACK):
                 self.paused = not self.paused
+            elif self.replay is not None and self.result is None and k in (pygame.K_f, pygame.K_TAB):
+                self.replay_fast = not self.replay_fast
         if inp.pause_tapped():
             self.paused = not self.paused
         if self.paused:
@@ -88,11 +107,24 @@ class RaceScene(Scene):
                 self._leave()
 
     def update(self):
+        fast = self.replay is not None and self.replay_fast and self.result is None
+        for _ in range(2 if fast else 1):
+            self._tick()
+
+    def _tick(self):
         if self.paused:
             self.app.input.consume_edges()
             return
         self.ticks += 1
-        ctl = self.app.input.race_controls(self.race.bike)
+        if self.replay is not None:
+            ctl = self._replay_next()
+            if ctl is None:
+                return
+            self.tilt = ((-1 if ctl.left else 1), 1, 1) if ctl.left != ctl.right and self.race.started \
+                else (0, 0, 1)
+        else:
+            ctl = self.app.input.race_controls(self.race.bike)
+            self.tilt = self.app.input.tilt(ctl, self.race.bike) if self.race.started else (0, 0, 1)
         self.app.input.consume_edges()
         if self.race.countdown > 0:
             sec = self.race.countdown // C.FPS
@@ -100,6 +132,8 @@ class RaceScene(Scene):
                 self.app.audio.event("beep")
             self._last_count = sec
         ev = self.race.step(ctl)
+        if self.recorder:
+            self.recorder.tick(ctl, ev)
         b = self.race.bike
         sx, sy = self.renderer.bike_screen_pos(b, b.x)
         for e in ev:
@@ -133,14 +167,24 @@ class RaceScene(Scene):
                 self.renderer.emit_burst(b, (240, 220, 180), 12, 2)       # dust as it lands
             elif k == "forgiven":
                 self.popups.add("SAVED!", C.COOL, sx, sy - 40)
+            elif k == "splash":
+                self.popups.add("SPLASH", C.COOL, sx, sy - 40, 30)
+                self.renderer.emit_splash(b, (110, 180, 240), (210, 235, 255))
+            elif k == "lava":
+                self.popups.add("LAVA!", (255, 130, 40), sx, sy - 40, 40)
+                self.renderer.emit_splash(b, (255, 110, 30), (255, 220, 90))
+            elif k == "vent":
+                self.popups.add("VENTED!", C.COOL, sx, sy - 40)
+                self.renderer.emit_burst(b, (235, 235, 240), 16, 1.4)     # steam
             elif k == "overheat":
                 self.renderer.emit_burst(b, (235, 235, 240), 16, 1.2)     # steam
             elif k == "coolant":
                 self.popups.add("COOL", C.COOL, sx, sy - 40, 30)
                 self.renderer.emit_burst(b, (120, 220, 255), 10, 1.5)
             elif k == "heatpad":
-                self.popups.add("HEAT!", (255, 120, 40), sx, sy - 40, 30)
-                self.renderer.emit_burst(b, (255, 150, 40), 12, 1.8)
+                bars = e[1]
+                self.popups.add("HEAT" + "+" * bars, (255, 120, 40), sx, sy - 40, 30)
+                self.renderer.emit_burst(b, (255, 150, 40), 6 + 5 * bars, 1.2 + 0.5 * bars)
             elif k == "lap":
                 self.best_lap = e[1] if self.best_lap is None else min(self.best_lap, e[1])
                 if self.race.laps_done < self.track.laps:
@@ -149,8 +193,8 @@ class RaceScene(Scene):
                 self._finish()
             self.app.audio.event(k)
         self.app.audio.engine(b, ctl)
-        if b.state == "ride" and (ctl.a or ctl.b) and self.ticks % 2 == 0:
-            self.renderer.emit_dust(b, b.x, ctl.b)
+        self._dust(b)
+        self._ambient(b)
         boosting = b.boost_level > 0 and b.state == "ride" and self.race.started
         if boosting:
             self.boost_lvl = b.boost_level
@@ -173,6 +217,49 @@ class RaceScene(Scene):
         if self.finish_hold > 0:
             self.finish_hold -= 1
 
+    def _dust(self, me):
+        """Riding dust for every bike on screen, and a dust cloud on touchdown
+        (sized by how fast the bike came down)."""
+        rd = self.renderer
+        cam = me.x
+        for bk in [me, *self.race.rivals]:
+            prev = self._air_prev.get(id(bk))
+            if prev and prev[0] and not bk.airborne and bk.state in ("ride", "done"):
+                rd.emit_landing_dust(bk, max(0.15, min(1.0, -prev[1] / 6.0)))
+            self._air_prev[id(bk)] = (bk.airborne, bk.vy)
+            rd.emit_dust(bk, cam, bk.boost_level > 0)
+
+    YOU_TICKS = 90                     # player marker stays this long after GO
+    PERFECT_GOLD = ((255, 205, 50), 2)
+
+    def _outline(self, b):
+        """Player outline: gold while lined up for a perfect landing, a pulsing
+        white/yellow 'this is you' outline at the start, otherwise none."""
+        if b.perfect_aligned():
+            return self.PERFECT_GOLD
+        if self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS:
+            return ((255, 255, 255) if (self.ticks // 10) % 2 else C.ACCENT, 2)
+        return None
+
+    def _draw_you(self, surf, rd, b, cam):
+        """'YOU' tag with a little arrow over the player's helmet at the start."""
+        sx, sy = rd.bike_screen_pos(b, cam)
+        x, y = int(sx + C.HEAT_ARC_DX), int(sy - 62 - (self.ticks // 8) % 2)
+        hud.text(surf, "YOU", (x, y - 8), 16, C.ACCENT, anchor="center")
+        pygame.draw.polygon(surf, (20, 18, 30), [(x - 6, y - 1), (x + 6, y - 1), (x, y + 6)])
+        pygame.draw.polygon(surf, C.ACCENT, [(x - 4, y), (x + 4, y), (x, y + 4)])
+
+    def _ambient(self, b):
+        """Volcano level: embers drifting up out of the ground."""
+        if self.track.theme != C.LAVA_THEME or self.ticks % 3:
+            return
+        rd = self.renderer
+        r = rd._rng
+        x = b.x + r.uniform(-C.BIKE_SCREEN_X, self.app.view.width - C.BIKE_SCREEN_X)
+        rd.particles.emit(x, C.lane_y(r.uniform(0, C.LANES)), r.uniform(-0.3, 0.3),
+                          -r.uniform(0.4, 1.0), r.randint(40, 80),
+                          r.choice(((255, 140, 40), (255, 210, 80), (230, 70, 30))), 1, -0.004)
+
     def _finish(self):
         if self.result is not None:
             return
@@ -191,10 +278,33 @@ class RaceScene(Scene):
         }
         if self.target:
             self.result["target_met"] = self.target.check(self.result)
+        self._save_recording()
         self.finish_hold = 50 if not self.forfeit else 0
         self.paused = False
         if self.forfeit:
             self._leave()
+
+    def _save_recording(self):
+        """Write the recording once, when the race ends (finished or quit)."""
+        if not self.recorder or self.recording_path:
+            return
+        import replay as rp
+        try:
+            self.recording_path = rp.save(self.recorder.finish(self.result))
+        except OSError:
+            self.recording_path = None          # never let a full disk break a race
+        self.recorder = None
+
+    def _replay_next(self):
+        """Next recorded control; at the end of the tape the replay finishes."""
+        import replay as rp
+        if self._replay_i >= len(self._replay_ctl):
+            if self.result is None:
+                self._finish()
+            return None
+        v = self._replay_ctl[self._replay_i]
+        self._replay_i += 1
+        return rp.bits_ctl(v)
 
     def _leave(self):
         self.app.input.race_mode = False
@@ -225,7 +335,9 @@ class RaceScene(Scene):
         bikes = [(rb, pool[i % len(pool)], False)
                  for i, rb in enumerate(self.race.rivals)]
         bikes.append((b, self.livery, True))
-        bikes.sort(key=lambda t: t[0].lane_pos)
+        marked = self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS
+        # depth by lane; while the start marker shows, the player is drawn on top
+        bikes.sort(key=lambda t: (marked and t[2], t[0].lane_pos))
         for bk, liv, me in bikes:
             frame = 0
             if bk.speed > 0 and bk.state == "ride":
@@ -235,7 +347,12 @@ class RaceScene(Scene):
                 rd.draw_heat_flame(surf, bk, cam, self.ticks)
             elif me and self.boost_k > 0 and bk.state == "ride":
                 rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
-            rd.draw_bike(surf, bk, cam, liv, frame, me)
+            rd.draw_bike(surf, bk, cam, liv, frame, me, self._outline(bk) if me else None)
+            if me and (self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS) \
+                    and bk.state == "ride":
+                self._draw_you(surf, rd, bk, cam)
+            if me and not self.paused and self.result is None:
+                rd.draw_tilt_arrow(surf, bk, cam, *self.tilt)
             if me and self.app.profile.settings.get("heat_gauge", "both") != "bar":
                 rd.draw_heat_arc(surf, bk, cam, self.ticks)
         if self.boost_k > 0 and b.state == "ride":
@@ -250,12 +367,21 @@ class RaceScene(Scene):
             extra.append(self.target.describe())
         hud.race_hud(surf, self.race, W, self.ticks, extra, self.best_lap,
                      heat_bar=self.app.profile.settings.get("heat_gauge", "both") != "bike")
+        if self.replay is not None and (self.ticks // 30) % 2 == 0 and self.result is None:
+            hud.text(surf, "REPLAY" + ("  x2" if self.replay_fast else ""), (W // 2, 96), 26,
+                     (255, 90, 90), anchor="center")
+        if self.replay is not None and self.result is None:
+            hud.text(surf, "F: speed x2   Esc: pause / quit", (W // 2, C.VIEW_H - 54), 15,
+                     (220, 216, 236), anchor="center")
         if self.title and self.race.countdown > 0:
             hud.text(surf, self.title, (W // 2, 70), 30, C.HUD_FG, anchor="center")
         self.app.input.draw_touch(surf, hud.font)
-        steering = (self.app.input.mouse_steering and not self.paused and self.result is None)
+        self.app.input.cam_lead = cam - b.x
+        inp = self.app.input
+        steering = ((inp.mouse_steering or inp.hover_lanes) and not self.paused and self.result is None
+                    and self.replay is None)
         if steering:
-            self.app.input.draw_mouse_guide(surf, rd.bike_screen_pos(b, cam), b.airborne)
+            inp.draw_mouse_guide(surf, rd.bike_screen_pos(b, cam), b.airborne)
         if steering == self._cursor_visible:      # only touch the OS cursor on change
             self._cursor_visible = not steering
             pygame.mouse.set_visible(self._cursor_visible)

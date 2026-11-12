@@ -107,3 +107,18 @@ def test_editor_scene_paint_undo_and_check():
     assert e.track.terrain[10] == FLAT and e.check_ok
     stroke(0, 0)                                     # start column is locked
     assert e.track.terrain[0] == START
+
+
+def test_share_code_keeps_water_and_the_volcano_theme():
+    from editor import io as tio
+    from track.tiles import make_track, WATER
+    t = make_track("S" + "." * 20, laps=2)
+    t.surface[2][7] = WATER
+    t.theme = "lava"
+    back = tio.decode(tio.encode(t))
+    assert back.surface[2][7] == WATER and back.theme == "lava"
+
+
+def test_share_code_roundtrip_with_structures():
+    t = make_track("S..utUTTDtkd..f.ff...")
+    assert tio.decode(tio.encode(t)).terrain == t.terrain

@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass, field, replace
 
 import config as C
-from track.tiles import (GAP, COOLANT, MUD, DEBRIS, DIRT, GRASS, SAND)
+from track.tiles import (GAP, MUD, DEBRIS, WATER, DIRT, GRASS, SAND, PADS, PAD_BARS)
 
 
 @dataclass
@@ -45,6 +45,16 @@ class BikeStats:
     grip: dict = field(default_factory=lambda: {DIRT: 1.0, GRASS: 0.82, SAND: 0.72})
     currency_mult: float = 1.0
     perfect_bonus_chance: float = 0.0
+    # heat / handling levers (run upgrades)
+    super_extra: float = C.SUPER_BOOST_EXTRA   # top speed over turbo in the red (one-button)
+    warmup_mult: float = 1.0           # one-button: cold-engine heating rate multiplier
+    red_heat_mult: float = 1.0         # heating rate in the red zone (past RED_AT)
+    vent_charges: int = 0              # per race: an overheat / blow-up vents instead
+    explode_ticks: int = C.EXPLODE_EXTRA_TICKS  # extra crash time for a blow-up
+    perfect_heat: float = 0.0          # perfect landing: +heat (one-button) / -heat (classic)
+    rough_loss_mult: float = 1.0       # share of the rough-landing speed / heat loss taken
+    lane_rate: float = C.LANE_CHANGE_RATE
+    respawn_heat: float = 0.0          # one-button: heat after recovering from a crash
 
     def copy(self):
         return replace(self, grip=dict(self.grip))
@@ -112,7 +122,9 @@ class Bike:
         self._drag_acc = 0
         self._last_cool_col = -1
         self._last_debris_col = -1
+        self._last_water_col = -1
         self.ticks = 0
+        self.vents_left = self.stats.vent_charges
         self.stats_counters = {"perfect": 0, "landings": 0, "crashes": 0, "rough": 0}
 
     # ------------------------------------------------------------------------
@@ -134,7 +146,7 @@ class Bike:
             return s.max_speed_a * max(0.0, t) / C.ONE_BOOST_AT
         if t < C.ONE_SUPER_AT:
             return s.max_speed_b
-        return s.max_speed_b + C.SUPER_BOOST_EXTRA
+        return s.max_speed_b + s.super_extra
 
     @property
     def vx(self):
@@ -143,6 +155,37 @@ class Bike:
     @property
     def lane_index(self):
         return int(round(self.lane_pos))
+
+    @property
+    def on_lava(self):
+        """Volcano theme: hot air (faster heat, slower cooling), lava pits."""
+        return self.track.theme == C.LAVA_THEME
+
+    def _env(self):
+        """(heat gain, cooling) multipliers from the level."""
+        return (C.LAVA_HEAT_MULT, C.LAVA_COOL_MULT) if self.on_lava else (1.0, 1.0)
+
+    def predicted_landing(self, max_ticks=240):
+        """(ticks until touchdown, landing x) on the current arc with no input."""
+        x, h, vy, vx = self.x, self.h, self.vy, self.vx
+        for t in range(1, max_ticks):
+            x += vx
+            vy -= C.GRAVITY
+            h += vy
+            if h <= self.track.ground(x):
+                return t, x
+        return max_ticks, x
+
+    def perfect_aligned(self):
+        """Mid-air on a real jump, with the nose already matching the landing
+        slope closely enough for a PERFECT if it touched down like this."""
+        if not self.airborne or self.state != "ride":
+            return False
+        t, x = self.predicted_landing()
+        if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x) == GAP:
+            return False
+        slope = math.degrees(math.atan(self.track.slope(x)))
+        return abs(self.angle - slope) <= self.stats.land_perfect
 
     def grip(self):
         return self.stats.grip.get(self.track.material_at(self.x), 1.0)
@@ -204,10 +247,11 @@ class Bike:
             if ctl.lane_down and self.lane < C.LANES - 1:
                 self.lane += 1
         d = self.lane - self.lane_pos
-        if abs(d) <= C.LANE_CHANGE_RATE:
+        rate = self.stats.lane_rate
+        if abs(d) <= rate:
             self.lane_pos = float(self.lane)
         else:
-            self.lane_pos += math.copysign(C.LANE_CHANGE_RATE, d)
+            self.lane_pos += math.copysign(rate, d)
 
     def _boost_from(self, ctl):
         """0/1/2 boost level for this tick. One-button mode: from the heat alone."""
@@ -235,7 +279,7 @@ class Bike:
         holding = held or self.in_grace
         cap = self.max_speed(turbo) if held else self.max_speed(False) if holding else 0
         if self.boost_level == 2:
-            cap += C.SUPER_BOOST_EXTRA * self.grip()
+            cap += self.stats.super_extra * self.grip()
         if self.track.surface_at(self.lane_index, self.x) == MUD:
             cap = min(cap, self.stats.mud_speed) if holding else 0
             mud = True
@@ -281,15 +325,18 @@ class Bike:
             self.chill -= 1
             if ctl.a or ctl.b:
                 return
+        hot, cool = self._env()
         if ctl.b and not self.airborne:
-            self.temp += s.heat_b
+            self.temp += s.heat_b * hot * (s.red_heat_mult if self.temp >= C.RED_AT else 1.0)
         elif ctl.a or ctl.b:
             if self.temp < C.TEMP_STABLE_A:
-                self.temp = min(C.TEMP_STABLE_A, self.temp + s.heat_a)
+                self.temp = min(C.TEMP_STABLE_A, self.temp + s.heat_a * hot)
             else:
-                self.temp = max(C.TEMP_STABLE_A, self.temp - C.COOL_A)
+                self.temp = max(C.TEMP_STABLE_A, self.temp - C.COOL_A * cool)
         else:
-            self.temp = max(C.TEMP_START, self.temp - s.cool_coast - s.passive_cool)
+            self.temp = max(C.TEMP_START, self.temp - (s.cool_coast + s.passive_cool) * cool)
+        if self.temp >= C.TEMP_OVERHEAT and self._vent(ev, C.TEMP_STABLE_A):
+            return
         if self.temp >= C.TEMP_OVERHEAT:
             self.temp = C.TEMP_OVERHEAT
             self.state = "overheat"
@@ -304,20 +351,36 @@ class Bike:
             self.chill -= 1
             if ctl.a or ctl.b:
                 return
+        hot, cool = self._env()
         if ctl.a or ctl.b:
-            self.temp += (s.heat_a * C.ONE_COLD_HEAT_MULT if self.temp < C.ONE_BOOST_AT
-                          else s.heat_b)
+            if self.temp < C.ONE_BOOST_AT:
+                self.temp += s.heat_a * C.ONE_COLD_HEAT_MULT * s.warmup_mult * hot
+            else:
+                self.temp += s.heat_b * hot * (s.red_heat_mult if self.temp >= C.ONE_SUPER_AT else 1.0)
         elif self.temp > 0:
-            self.temp = max(0.0, self.temp - s.cool_coast - s.passive_cool)
-        if self.temp >= C.TEMP_OVERHEAT:
+            self.temp = max(0.0, self.temp - (s.cool_coast + s.passive_cool) * cool)
+        self._check_blowup(ev)
+
+    def _check_blowup(self, ev):
+        """One-button: at the top of the gauge the bike blows, unless a vent is left."""
+        if self.temp >= C.TEMP_OVERHEAT and not self._vent(ev, C.ONE_SUPER_AT - C.VENT_DROP):
             self.temp = C.TEMP_OVERHEAT
             self._explode(ev)
+
+    def _vent(self, ev, to):
+        """Radiator upgrade: spend a vent charge to drop the heat instead of blowing."""
+        if self.vents_left <= 0:
+            return False
+        self.vents_left -= 1
+        self.temp = to
+        ev.append(("vent",))
+        return True
 
     def _explode(self, ev):
         """Pushed past the red window: the bike blows up. A long crash; no forgiveness."""
         self.stats_counters["crashes"] += 1
         self.state = "crash"
-        self.crash_total = self.stats.crash_ticks + C.EXPLODE_EXTRA_TICKS
+        self.crash_total = self.stats.crash_ticks + self.stats.explode_ticks
         self.timer = self.crash_total
         self.crash_reason = "explode"
         self.crash_speed = self.speed
@@ -394,17 +457,24 @@ class Bike:
             return
         if abs(err) <= s.land_perfect:
             self.stats_counters["perfect"] += 1
+            if s.perfect_heat:
+                # Hype Landing: a heat kick in one-button mode (never past the top),
+                # a cool-down in classic mode.
+                if self.one_button:
+                    self.temp = max(self.temp, min(C.TEMP_OVERHEAT - 1.0, self.temp + s.perfect_heat))
+                else:
+                    self.temp = max(C.TEMP_START, self.temp - s.perfect_heat)
             ev.append(("perfect",))
         elif abs(err) <= s.land_tolerance:
             ev.append(("land",))
         elif 0 < err <= C.LAND_ROUGH:
-            self.speed *= C.ROUGH_SPEED_KEEP
+            self.speed *= 1.0 - (1.0 - C.ROUGH_SPEED_KEEP) * s.rough_loss_mult
             self.wobble = C.ROUGH_WOBBLE_TICKS
             self.stats_counters["rough"] += 1
             if self.one_button:
                 # heat is speed here: a sloppy landing dumps heat, so landing
                 # well is how you keep your boost
-                self.temp = max(0.0, self.temp - C.ONE_ROUGH_HEAT_LOSS)
+                self.temp = max(0.0, self.temp - C.ONE_ROUGH_HEAT_LOSS * s.rough_loss_mult)
             ev.append(("rough",))
         else:
             self._crash(ev, "nose" if err < 0 else "loop")
@@ -415,18 +485,26 @@ class Bike:
     def _surfaces(self, ev):
         col = self.track.col_at(self.x)
         surf = self.track.surface[self.lane_index][col]
-        if surf != COOLANT:
+        if surf not in PADS:
             self._last_cool_col = -1
         if surf != DEBRIS:
             self._last_debris_col = -1
-        if surf == COOLANT and col != self._last_cool_col:
+        if surf != WATER:
+            self._last_water_col = -1
+        if surf == WATER and col != self._last_water_col:
+            self._last_water_col = col
+            self._splash(ev)
+            return
+        if surf in PADS and col != self._last_cool_col:
             self._last_cool_col = col
             self.chill = self.stats.coolant_chill
             if self.one_button:
-                # One-button: pads are heat pads. A burst of heat (speed) that can
-                # push you into the red, or past it.
-                self.temp += C.ONE_HEAT_PAD
-                ev.append(("heatpad",))
+                # One-button: pads are heat pads, +1/+2/+3 bars by size. A burst
+                # of heat (speed) that can push you into the red, or past it.
+                bars = PAD_BARS[surf]
+                self.temp += bars * C.HEAT_BAR
+                ev.append(("heatpad", bars))
+                self._check_blowup(ev)
             else:
                 self.temp = min(self.temp, self.stats.coolant_reset)
                 ev.append(("coolant",))
@@ -439,6 +517,21 @@ class Bike:
                 else:
                     self.speed = 0
                     ev.append(("bump",))
+
+    def _splash(self, ev):
+        """Water puddle: cools the engine and costs speed. On the Volcano theme the
+        puddle is a lava pit: a speed kick past the cap and a lot of heat."""
+        if self.on_lava:
+            self.temp += C.LAVA_PIT_HEAT
+            self.speed += C.LAVA_PIT_SPEED
+            ev.append(("lava",))
+            if self.one_button:
+                self._check_blowup(ev)
+            return
+        floor = 0.0 if self.one_button else C.TEMP_START
+        self.temp = max(floor, self.temp - C.WATER_COOL)
+        self.speed *= C.WATER_SPEED_KEEP
+        ev.append(("splash",))
 
     # -- crash / overheat --------------------------------------------------------------
     def _crash(self, ev, reason):
@@ -482,6 +575,8 @@ class Bike:
             self.angle = math.degrees(math.atan(self.track.slope(self.x)))
             self.state = "ride"
             self.wobble = 0
+            if self.one_button:
+                self.temp = self.stats.respawn_heat     # Pre-Heater: restart warm
             ev.append(("recovered",))
 
     def _step_overheat(self, ev):
