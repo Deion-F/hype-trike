@@ -24,6 +24,46 @@ MODIFIERS = {
     "sticky": ("Mud Season", "Mud everywhere: half the lanes are boggy"),
 }
 
+# Heats (0-based) that carry a modifier, earliest first.
+MODIFIER_HEATS = (2, 4)
+
+# How hard each modifier makes a heat, 0 (barely matters) .. 1 (the hardest).
+# Measured, not guessed: the difficulty tuner sets these from
+# `tools/tuning.py mods` (recordings) and `tools/tuning.py modsim` (AI players
+# racing the same heats with each modifier forced). See docs/tuning_log.md.
+# 2026-11-13 (modsim 12 seeds, one-button): Mud Season clearly hardest; Stiff
+# Forks neutral; Hot Engine and No Coolant slightly *help* AI pilots (heat is
+# speed in one-button). Hot Engine nudged up from 0.27: the 2 recorded human
+# heats with it averaged a blow-up per race.
+MODIFIER_HARDNESS = {
+    "no_coolant": 0.1,
+    "double_heat": 0.35,
+    "fragile": 0.5,
+    "sticky": 0.9,
+}
+# How strongly later modifier heats prefer the harder modifiers (and earlier
+# ones the easier). 0 = uniform pick; 0.8 gives weights between 0.2 and 1.8.
+MODIFIER_SKEW = 0.8
+
+
+def modifier_weights(i):
+    """{modifier: pick weight} for heat i. The first modifier heat leans to the
+    easier modifiers, the last to the harder ones."""
+    slots = MODIFIER_HEATS
+    p = slots.index(i) / max(1, len(slots) - 1) if i in slots else 0.5
+    return {m: max(0.05, 1.0 + MODIFIER_SKEW * (2 * p - 1) * (2 * MODIFIER_HARDNESS.get(m, 0.5) - 1))
+            for m in MODIFIERS}
+
+
+def pick_modifier(rng, i):
+    w = modifier_weights(i)
+    r = rng.random() * sum(w.values())
+    for m, x in w.items():
+        r -= x
+        if r <= 0:
+            return m
+    return m
+
 
 class Target:
     def __init__(self, kind, value=None, modifier=None):
@@ -91,8 +131,8 @@ class RunState:
         # Trial). Heats 3 and 5 add a track modifier on top.
         if last:
             target = Target("place", 1)
-        elif i in (2, 4):
-            target = Target("place", 2, self.rng.choice(list(MODIFIERS)))
+        elif i in MODIFIER_HEATS:
+            target = Target("place", 2, pick_modifier(self.rng, i))
         else:
             target = Target("place", 3 if i < 2 else 2)
         rivals = 3

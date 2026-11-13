@@ -6,7 +6,8 @@ import pygame
 
 import config as C
 from track.tiles import (PROFILES, GAP, START, COOLANT, MUD, DEBRIS, WATER, PAD_BARS,
-                         DIRT, GRASS, SAND, PIT_DEPTH)
+                         DIRT, GRASS, SAND, PIT_DEPTH, DECKS, DECK_UP, DECK, DECK_DOWN,
+                         DECK_KICK, DECK_GAP, DRAW, DECK_H, draw_lift)
 from ui import art
 
 FRONT_BOTTOM = 342
@@ -105,10 +106,11 @@ class WorldRenderer:
         surf.fill(_shade(th["berm"], 0.85), (0, C.LANE_BASE_Y - 12, self.width, 12))
         surf.fill(_shade(th["berm"], 1.05), (0, C.LANE_BASE_Y - 12, self.width, 2))
 
-    COL_TOP = C.LANE_BASE_Y - 92   # tallest structure (mesa kicker, 50 px) + art above it
+    COL_TOP = C.LANE_BASE_Y - 100  # tallest structure (deck kicker, 71 px) + art above it
 
-    def draw_track(self, surf, track, cam_x, editor_cursor=None):
-        """Blit pre-rendered columns (each column is rendered once per track)."""
+    def draw_track(self, surf, track, cam_x, editor_cursor=None, ticks=0):
+        """Blit pre-rendered columns (each column is rendered once per track).
+        ticks: race tick, for the moving parts (drawbridge leaves)."""
         key = (self.theme_name, getattr(self, "heat_pads", False))
         if getattr(self, "_cache_track", None) is not track or self._cache_theme != key:
             self._cache_track = track
@@ -123,7 +125,10 @@ class WorldRenderer:
             if img is None:
                 img = self._render_column(track, col)
                 self._col_cache[col] = img
-            surf.blit(img, (int(round(C.BIKE_SCREEN_X + ci * C.TILE_W - cam_x)), self.COL_TOP))
+            sx0 = int(round(C.BIKE_SCREEN_X + ci * C.TILE_W - cam_x))
+            surf.blit(img, (sx0, self.COL_TOP))
+            if track.terrain[col] == DRAW:
+                self._draw_leaf(surf, sx0, draw_lift(ticks, col), ticks)
 
     def _render_column(self, track, col):
         tmp = pygame.Surface((C.TILE_W + 2, FRONT_BOTTOM + 2), pygame.SRCALPHA)
@@ -134,6 +139,9 @@ class WorldRenderer:
         th = self.theme
         t = track.terrain[col]
         base = self.mat_col.get(track.material[col], th["dirt"])
+        if t in DECKS:
+            self._draw_deck_column(surf, track, col, sx0, base)
+            return
         if t == GAP:
             self._draw_pit(surf, sx0,
                            track.terrain[(col - 1) % track.ncols] == GAP,
@@ -181,6 +189,166 @@ class WorldRenderer:
         if t == START:
             self._draw_start(surf, sx0)
         self._draw_surfaces(surf, track, col, sx0)
+
+    # -- raised decks: a timber trestle bridge -------------------------------------------
+    PLANK = (196, 150, 96)
+    BEAM = (92, 62, 40)
+    RAIL = (52, 44, 52)
+
+    def _ground_strip(self, surf, sx0, base, x0=0, x1=C.TILE_W, shade=1.0):
+        """Flat ground lanes + front wall (what you see under the deck)."""
+        th = self.theme
+        base = _shade(base, shade)
+        a, b = sx0 + x0, sx0 + x1
+        for lane in range(C.LANES):
+            ya, yb = C.lane_y(lane), C.lane_y(lane + 1)
+            lk = 0.97 if lane % 2 else 1.0
+            surf.fill(_shade(base, lk), (a, ya, b - a + 1, yb - ya))
+            pygame.draw.line(surf, _shade(base, lk * 1.18), (a, ya), (b, ya))
+        yf = C.lane_y(C.LANES)
+        surf.fill(_shade(th["wall"], 1.0), (a, yf, b - a + 1, FRONT_BOTTOM - yf))
+
+    def _deck_surface(self, surf, sx0, prof, x_from=0, x_to=C.TILE_W):
+        """Plank lanes following `prof` between x_from and x_to; returns nothing."""
+        plank = self.PLANK
+        for (x0, h0), (x1, h1) in zip(prof, prof[1:]):
+            x0c, x1c = max(x0, x_from), min(x1, x_to)
+            if x1c <= x0c:
+                continue
+            f0 = (x0c - x0) / (x1 - x0)
+            f1 = (x1c - x0) / (x1 - x0)
+            ha, hb = h0 + (h1 - h0) * f0, h0 + (h1 - h0) * f1
+            a, b = sx0 + x0c, sx0 + x1c
+            slope = (h1 - h0) / (x1 - x0)
+            k = 1.0 + max(-0.3, min(0.25, slope * 0.35))
+            for lane in range(C.LANES):
+                ya, yb = C.lane_y(lane), C.lane_y(lane + 1)
+                lk = k * (0.95 if lane % 2 else 1.0)
+                pygame.draw.polygon(surf, _shade(plank, lk),
+                                    [(a, ya - ha), (b, ya - hb), (b + 1, yb - hb), (a, yb - ha)])
+            # plank seams across the deck (every 8 px)
+            for px in range((x0c + 7) // 8 * 8, x1c, 8):
+                hp = h0 + (h1 - h0) * (px - x0) / (x1 - x0)
+                pygame.draw.line(surf, _shade(plank, 0.78), (sx0 + px, C.lane_y(0) - hp),
+                                 (sx0 + px, C.lane_y(C.LANES) - hp))
+            # back rail and front deck edge (a dark beam)
+            pygame.draw.line(surf, self.RAIL, (a, C.lane_y(0) - ha - 1), (b, C.lane_y(0) - hb - 1), 2)
+            yf = C.lane_y(C.LANES)
+            pygame.draw.polygon(surf, self.BEAM, [(a, yf - ha), (b, yf - hb), (b, yf - hb + 6), (a, yf - ha + 6)])
+            pygame.draw.line(surf, _shade(self.BEAM, 1.4), (a, yf - ha), (b, yf - hb))
+
+    def _trestle(self, surf, x, top_h):
+        """A timber leg pair with cross-bracing, from the deck's front edge down."""
+        yf = C.lane_y(C.LANES)
+        y_top = yf - top_h + 6
+        if y_top >= yf:
+            return
+        beam = self.BEAM
+        dark = _shade(beam, 0.7)
+        # back leg (behind, under the far edge of the deck) peeks out higher up
+        yb = C.lane_y(0)
+        if yb - top_h + 6 < yb:
+            surf.fill(dark, (x + 4, yb - top_h + 6, 3, top_h - 6))
+        surf.fill(beam, (x, y_top, 4, yf - y_top))
+        surf.fill(_shade(beam, 1.35), (x, y_top, 1, yf - y_top))
+        surf.fill(dark, (x - 1, yf - 2, 6, 3))           # footing
+
+    def _bracing(self, surf, xa, xb, top_h):
+        yf = C.lane_y(C.LANES)
+        y_top = yf - top_h + 7
+        if yf - y_top < 10:
+            return
+        col = _shade(self.BEAM, 0.85)
+        pygame.draw.line(surf, col, (xa + 3, y_top), (xb, yf - 3), 2)
+        pygame.draw.line(surf, col, (xa + 3, yf - 3), (xb, y_top), 2)
+
+    def _draw_deck_column(self, surf, track, col, sx0, base):
+        t = track.terrain[col]
+        prof = PROFILES[t]
+        nxt = track.terrain[(col + 1) % track.ncols]
+        prv = track.terrain[(col - 1) % track.ncols]
+        # the deck's shadow darkens the ground under it, so the space reads as open
+        self._ground_strip(surf, sx0, base, shade=1.0 if t in (DECK_GAP, DRAW) else 0.58)
+        if t == DECK_UP:
+            # a solid timber ramp: wedge front face, planks on top
+            yf = C.lane_y(C.LANES)
+            pts = [(sx0 + x, yf - h) for x, h in prof] + [(sx0 + C.TILE_W, yf), (sx0, yf)]
+            pygame.draw.polygon(surf, _shade(self.BEAM, 1.1), pts)
+            for i in range(1, 6):        # horizontal boards on the face
+                y = yf - i * DECK_H / 6
+                xr = sx0 + 72 * (i * DECK_H / 6) / DECK_H
+                pygame.draw.line(surf, _shade(self.BEAM, 0.8), (xr, y), (sx0 + C.TILE_W, y))
+            self._deck_surface(surf, sx0, prof)
+            self._trestle(surf, sx0 + C.TILE_W - 6, DECK_H)
+            return
+        if t == DECK_GAP:
+            # the span is gone: a hole in the ground under it, splintered ends
+            self._draw_pit(surf, sx0, False, False)
+            for side, x in ((0, sx0), (1, sx0 + C.TILE_W - 8)):
+                for lane in range(C.LANES):
+                    ya = C.lane_y(lane) - DECK_H
+                    jag = 3 + (lane * 5 + side * 3) % 5
+                    xx = x + (0 if side == 0 else 8 - jag)
+                    surf.fill(_shade(self.PLANK, 0.9), (xx, ya, jag, C.LANE_SPACING))
+            return
+        if t == DRAW:
+            # piers both ends; the leaf itself is drawn live (_draw_leaf)
+            self._draw_pit(surf, sx0, False, False)
+            self._trestle(surf, sx0 + 2, DECK_H + 4)
+            self._trestle(surf, sx0 + C.TILE_W - 6, DECK_H + 4)
+            return
+        if t == DECK_DOWN:
+            self._deck_surface(surf, sx0, prof, 0, 16)
+            yf = C.lane_y(C.LANES)
+            pts = [(sx0 + 16, yf - DECK_H), (sx0 + C.TILE_W, yf), (sx0 + 16, yf)]
+            pygame.draw.polygon(surf, _shade(self.BEAM, 1.1), pts)
+            self._deck_surface(surf, sx0, prof, 16, C.TILE_W)
+            self._trestle(surf, sx0 + 12, DECK_H)
+            return
+        # deck / deck kicker: open underneath, legs every half column with bracing
+        self._bracing(surf, sx0 + 2, sx0 + 38, DECK_H)
+        self._bracing(surf, sx0 + 42, sx0 + 78, DECK_H)
+        for lx in (2, 40):
+            self._trestle(surf, sx0 + lx, DECK_H)
+        flat = [(0, DECK_H), (C.TILE_W, DECK_H)]
+        self._deck_surface(surf, sx0, flat)
+        if t == DECK_KICK:
+            self._deck_surface(surf, sx0, prof, 0, 62)
+            for lane in range(C.LANES + 1):     # warning chevrons on the kicker lip
+                y = C.lane_y(lane) - DECK_H - 15
+                surf.fill((250, 210, 40) if lane % 2 else (30, 30, 30), (sx0 + 52, y - 1, 5, 3))
+        if nxt in (DECK_GAP, DRAW):
+            # warning stripes on the edge before a hole
+            for lane in range(C.LANES + 1):
+                y = C.lane_y(lane) - DECK_H
+                surf.fill((250, 210, 40) if lane % 2 else (30, 30, 30), (sx0 + C.TILE_W - 3, y - 2, 3, 4))
+        self._draw_surfaces(surf, track, col, sx0)
+
+    def _draw_leaf(self, surf, sx0, lift, ticks):
+        """Drawbridge leaf hinged at its far end; `lift` 0 (down) .. 1 (up, ~70 deg)."""
+        ang = math.radians(70 * lift)
+        L = C.TILE_W - 4
+        hx = sx0 + C.TILE_W - 2                  # hinge x
+        dx, dh = L * math.cos(ang), L * math.sin(ang)
+        plank = self.PLANK
+        for lane in range(C.LANES):
+            ya, yb = C.lane_y(lane) - DECK_H, C.lane_y(lane + 1) - DECK_H
+            lk = (0.95 if lane % 2 else 1.0) * (1.0 - 0.25 * lift)
+            pygame.draw.polygon(surf, _shade(plank, lk),
+                                [(hx - dx, ya - dh), (hx, ya), (hx, yb), (hx - dx, yb - dh)])
+        yf = C.lane_y(C.LANES) - DECK_H
+        pygame.draw.polygon(surf, self.BEAM, [(hx - dx, yf - dh), (hx, yf), (hx, yf + 6), (hx - dx, yf - dh + 6)])
+        pygame.draw.line(surf, self.RAIL, (hx - dx, C.lane_y(0) - DECK_H - dh - 1), (hx, C.lane_y(0) - DECK_H - 1), 2)
+        # signal post on the near pier: red while lifting/up (blinks), green when down
+        px, py = sx0 + 1, C.lane_y(0) - DECK_H - 26
+        surf.fill(self.RAIL, (px, py, 3, 26))
+        if lift > 0.02:
+            on = (ticks // 8) % 2 == 0 or lift >= 1.0
+            colr = (255, 60, 40) if on else (120, 30, 30)
+        else:
+            colr = (80, 230, 90)
+        pygame.draw.circle(surf, (24, 20, 30), (px + 1, py - 2), 4)
+        pygame.draw.circle(surf, colr, (px + 1, py - 2), 3)
 
     def _draw_pit(self, surf, sx0, open_left=False, open_right=False):
         th = self.theme

@@ -79,6 +79,87 @@ def mix(*parts, offsets=None):
     return out
 
 
+def _onepole_lp(x, fc, sr=SR):
+    """One-pole low-pass, run circularly (two passes) so a loop wraps seamlessly."""
+    a = math.exp(-2 * math.pi * fc / sr)
+    y = x[-1]
+    out = [0.0] * len(x)
+    for _ in range(2):
+        for i, v in enumerate(x):
+            y = v + a * (y - v)
+            out[i] = y
+    return out
+
+
+def _onepole_hp(x, fc, sr=SR):
+    lp = _onepole_lp(x, fc, sr)
+    return [v - l for v, l in zip(x, lp)]
+
+
+ENGINE_STEPS = 16
+ENGINE_HZ = (15.0, 82.0)      # four-stroke single firing rate: ~1800 rpm idle .. ~9800 rpm
+
+
+def engine_hz(step):
+    lo, hi = ENGINE_HZ
+    return lo * (hi / lo) ** (step / (ENGINE_STEPS - 1))
+
+
+def engine_loop(fire_hz, dur=0.6, seed=7, sr=SR):
+    g = engine_loop_gen(fire_hz, dur, seed, sr)
+    try:
+        while True:
+            next(g)
+    except StopIteration as done:
+        return done.value
+
+
+def engine_loop_gen(fire_hz, dur=0.6, seed=7, sr=SR):
+    """A seamless loop of a single-cylinder four-stroke at `fire_hz` firings per second.
+
+    Each firing is a soft-edged exhaust thump: a low resonant 'body' tone plus a
+    breath of noise, decaying before the next one. Firings wobble a little in
+    timing, strength and tone (real engines never fire identically), and the
+    whole loop is low-passed so there is no buzz or whine on top.
+    """
+    r = random.Random(seed)
+    n_fire = max(3, round(fire_hz * dur))
+    n = int(round(n_fire * sr / fire_hz))
+    period = n / n_fire
+    out = [0.0] * n
+    tau = max(0.005, min(0.022, 0.32 / fire_hz))            # pulse decay
+    plen = int(sr * tau * 5)
+    att = 0.0012 * sr
+    body = 105 + 1.5 * fire_hz                              # exhaust note (bark), ~130-230 Hz
+    for k in range(n_fire):
+        start = k * period + r.uniform(-0.035, 0.035) * period
+        amp = (1.0 if k % 2 == 0 else 0.86) * r.uniform(0.85, 1.12)
+        fr = body * r.uniform(0.93, 1.07)
+        f2 = fr * r.uniform(2.6, 2.9)
+        ns = r.uniform(0.45, 0.65)
+        lp_n = 0.0
+        base = int(start)
+        for j in range(plen):
+            t = j / sr
+            env = math.exp(-t / tau) * (1 - math.exp(-j / att))
+            w = 2 * math.pi * t
+            lp_n += (r.uniform(-1, 1) - lp_n) * 0.35           # roughly low-passed noise
+            v = (math.sin(w * fr) + 0.3 * math.sin(w * f2) * math.exp(-t / (tau * 0.5)) + ns * lp_n)
+            out[(base + j) % n] += v * env * amp
+        if k % 6 == 5:
+            yield None                                       # built a slice per frame
+    yield None
+    out = _onepole_hp(out, 28, sr)                           # no DC thump at the loop seam
+    yield None
+    fc = 520 + 11 * fire_hz
+    out = _onepole_lp(out, fc, sr)
+    yield None
+    out = _onepole_lp(out, fc, sr)                           # 12 dB/oct: kills the fizz
+    yield None
+    peak = max(1e-6, max(abs(v) for v in out))
+    return [v / peak * 0.85 for v in out]
+
+
 def seq(notes, step, **kw):
     """notes: list of names or None (rest). Each note lasts `step` seconds."""
     parts, offs = [], []
@@ -97,8 +178,12 @@ class Audio:
         self.sfx_vol = 1.0
         self.music_vol = 1.0
         self.sounds = {}
-        self.engine_loops = []
+        self.engine_loops = [None] * ENGINE_STEPS
+        self._engine_gen = None
         self._engine_bucket = None
+        self._engine_x = 0.0
+        self._engine_ch = 0
+        self._tick_n = 0
         self._music_gen = None
         self._music = None
         self._music_playing = False
@@ -114,9 +199,10 @@ class Audio:
             freq, size, ch = pygame.mixer.get_init()
             self.sr, self.channels = freq, ch
             pygame.mixer.set_num_channels(12)
-            self.ch_engine = pygame.mixer.Channel(0)
+            # two engine channels so pitch steps crossfade instead of cutting over
+            self.ch_engines = (pygame.mixer.Channel(0), pygame.mixer.Channel(2))
             self.ch_music = pygame.mixer.Channel(1)
-            pygame.mixer.set_reserved(2)
+            pygame.mixer.set_reserved(3)
             self._build_sfx()
             self.enabled = True
         except Exception:
@@ -129,7 +215,8 @@ class Audio:
         self.music_on = bool(music) and self.music_vol > 0
         if not self.enabled:
             return
-        self.ch_engine.set_volume(self.sfx_vol)
+        for ch in self.ch_engines:
+            ch.set_volume(self.sfx_vol)
         if self._music is not None:
             self._music.set_volume(MUSIC_BASE_VOL * self.music_vol)
         if not self.sound_on:
@@ -184,19 +271,21 @@ class Audio:
             "vent": S(mix(noise(0.5, 0.25, 11000, rate_end=4000), osc(600, 0.3, "sine", 0.15, f_end=250))),
             "bike_drop": S(mix(noise(0.12, 0.35, 2500), osc(110, 0.12, "tri", 0.4, f_end=55))),
         }
-        # engine: pulse loops at rising pitch; whole cycles so loops don't click
-        self.engine_loops = []
-        for b in range(12):
-            f = 38 + b * 11
-            cyc = SR / f
-            n_cyc = max(4, int(0.12 * f))
-            n = int(round(cyc * n_cyc))
-            loop = []
-            for i in range(n):
-                ph = (i / cyc) % 1.0
-                v = (0.22 if ph < 0.3 else -0.22) + (0.08 if (2 * ph) % 1.0 < 0.5 else -0.08)
-                loop.append(v)
-            self.engine_loops.append(self._sound(loop, 0.35))
+        self._engine_gen = self._build_engine()
+
+    ENGINE_VOL = 0.42
+
+    def _build_engine(self):
+        """Engine loops, built a slice at a time from tick()."""
+        order = [0, ENGINE_STEPS - 1]
+        gap = ENGINE_STEPS
+        while len(order) < ENGINE_STEPS:          # spread out: any step has a near neighbour early
+            gap //= 2
+            order += [b for b in range(gap, ENGINE_STEPS, gap) if b not in order]
+        for b in order:
+            samples = yield from engine_loop_gen(engine_hz(b), seed=11 + b)
+            self.engine_loops[b] = self._sound(samples, self.ENGINE_VOL)
+            yield None
 
     # -- public API --------------------------------------------------------------------
     def event(self, kind):
@@ -217,18 +306,33 @@ class Audio:
         if bike.state in ("crash", "done") or (bike.state == "overheat" and bike.speed <= 0):
             self.stop_engine()
             return
-        b = int(bike.speed / 4.5)
+        x = bike.speed / 50.0
         if bike.state == "ride":
-            b += getattr(bike, "boost_level", 1 if ctl.b else 0)
-        b = max(0, min(len(self.engine_loops) - 1, b))
-        if b != self._engine_bucket or not self.ch_engine.get_busy():
+            x += 0.08 * getattr(bike, "boost_level", 1 if ctl.b else 0)
+        x = max(0.0, min(1.0, x)) * (ENGINE_STEPS - 1)
+        b = self._engine_bucket
+        if b is None or abs(x - b) > 0.7:           # hysteresis: no flutter between two steps
+            b = int(x + 0.5)
+        if self.engine_loops[b] is None:          # still being built: use the nearest that is
+            built = [i for i, s in enumerate(self.engine_loops) if s is not None]
+            if not built:
+                return
+            b = min(built, key=lambda i: abs(i - b))
+        cur = self.ch_engines[self._engine_ch]
+        if b != self._engine_bucket or not cur.get_busy():
+            first = self._engine_bucket is None or not cur.get_busy()
+            if not first:
+                cur.fadeout(110)
+                self._engine_ch ^= 1
+                cur = self.ch_engines[self._engine_ch]
             self._engine_bucket = b
-            self.ch_engine.play(self.engine_loops[b], loops=-1)
-            self.ch_engine.set_volume(self.sfx_vol)
+            cur.play(self.engine_loops[b], loops=-1, fade_ms=110 if not first else 60)
+            cur.set_volume(self.sfx_vol)
 
     def stop_engine(self):
         if self.enabled:
-            self.ch_engine.stop()
+            for ch in self.ch_engines:
+                ch.fadeout(80)
         self._engine_bucket = None
 
     # -- music ---------------------------------------------------------------------------------
@@ -242,10 +346,17 @@ class Audio:
             self._music_playing = False
 
     def tick(self):
-        """Call once per frame: builds music a slice at a time, then loops it."""
+        """Call once per frame: builds engine loops and music a slice at a time
+        (alternating frames, so neither waits on the other), then loops the music."""
         if not self.enabled:
             return
-        if self._music is None:
+        self._tick_n += 1
+        if self._engine_gen is not None and (self._music is not None or self._tick_n % 2):
+            try:
+                next(self._engine_gen)
+            except StopIteration:
+                self._engine_gen = None
+        elif self._music is None:
             if self._music_gen is None:
                 self._music_gen = self._build_music()
             try:
@@ -254,7 +365,7 @@ class Audio:
                 self._music = done.value
                 self._music.set_volume(MUSIC_BASE_VOL * self.music_vol)
             return
-        if self._want_music and self.music_on and not self._music_playing:
+        if self._music is not None and self._want_music and self.music_on and not self._music_playing:
             self.ch_music.play(self._music, loops=-1, fade_ms=600)
             self._music_playing = True
 

@@ -6,6 +6,12 @@
   python tools/tuning.py sim [--seeds N] [--mode one|classic|both]
                                             simulated runs with AI players of several skill
                                             tiers -> target-met rate per heat (the curve)
+  python tools/tuning.py mods [--json]      how hard each modifier (disadvantage) made the
+                                            recorded heats vs unmodified heats nearby
+  python tools/tuning.py modsim [--seeds N] [--mode one|classic]
+                                            AI players race the modifier heats with each
+                                            modifier forced -> measured hardness + a suggested
+                                            run/manager.py MODIFIER_HARDNESS
   python tools/tuning.py archive --note "what was tuned" [ID ...]
                                             move recordings (all, or the given IDs) to
                                             recordings/archive/<stamp>/ with a NOTE.md
@@ -268,6 +274,134 @@ def cmd_sim(args):
     print("\n! = more than", int(CURVE_SLACK * 100), "points off the goal curve")
 
 
+# --- modifiers (disadvantages) ------------------------------------------------------------------
+def _race_score(s):
+    """0..1 how well a recorded race went (target met, place, crashes)."""
+    met = 1.0 if s.get("target_met") else 0.0
+    field = max(1, s.get("field") or 4)
+    place = 1.0 - ((s.get("position") or field) - 1) / max(1, field - 1)
+    return met, place, sum((s.get("crashes") or {}).values()) + s.get("explodes", 0)
+
+
+def cmd_mods(args):
+    """Per modifier: target-met, place, crashes in recorded run heats, against
+    unmodified run heats at the same or a neighbouring heat index."""
+    from run.manager import MODIFIERS, MODIFIER_HARDNESS
+    by_mod, base = defaultdict(list), defaultdict(list)
+    for _, d in load(args.dir):
+        c, s = d.get("context", {}), d.get("summary")
+        if c.get("kind") != "run" or not s or s.get("forfeit"):
+            continue
+        row = (c.get("heat", 0), *_race_score(s), s.get("explodes", 0))
+        (by_mod[c["modifier"]] if c.get("modifier") else base[c.get("heat", 0)]).append(row)
+    out = {}
+    for m in MODIFIERS:
+        rows = by_mod.get(m, [])
+        if not rows:
+            out[m] = {"races": 0}
+            continue
+        ref = [r for h, *_ in rows for r in base.get(h, []) + base.get(h - 1, []) + base.get(h + 1, [])]
+        avg = lambda rs, k: round(sum(r[k] for r in rs) / len(rs), 2) if rs else None  # noqa: E731
+        out[m] = {"races": len(rows), "baseline_races": len(ref),
+                  "target_met": avg(rows, 1), "baseline_target_met": avg(ref, 1),
+                  "place_score": avg(rows, 2), "baseline_place_score": avg(ref, 2),
+                  "crashes": avg(rows, 3), "baseline_crashes": avg(ref, 3),
+                  "explodes": avg(rows, 4),
+                  "current_hardness": MODIFIER_HARDNESS.get(m)}
+        if ref:
+            out[m]["met_drop"] = round(out[m]["baseline_target_met"] - out[m]["target_met"], 2)
+    if args.json:
+        print(json.dumps(out, indent=1))
+        return
+    print("# Modifiers in recorded run heats (vs unmodified heats at the same +-1 heat)\n")
+    for m, r in out.items():
+        name = MODIFIERS[m][0]
+        if not r["races"]:
+            print(f"- {m} ({name}): no recordings")
+            continue
+        print(f"- {m} ({name}): {r['races']} races, target met {r['target_met']} vs {r['baseline_target_met']}, "
+              f"place {r['place_score']} vs {r['baseline_place_score']}, crashes {r['crashes']} vs "
+              f"{r['baseline_crashes']}, blow-ups {r['explodes']}  [hardness now {r['current_hardness']}]")
+    print("\nRecorded modifier heats are rare (2 per run): back any change with `modsim`.")
+
+
+def modsim(seeds, mode="one", tiers=("average", "learning")):
+    """Race the modifier heats of `seeds` runs once per modifier (and once with
+    none), same tracks seeds and upgrades. Returns {mod: {met, place, crashes}}."""
+    from race import Race
+    from run.manager import RunState, MODIFIERS, MODIFIER_HEATS, RUN_HEATS
+    from run.upgrades import offer
+    from track.validator import GhostAI
+    res = {m: {"met": [], "place": [], "crashes": []} for m in [None] + list(MODIFIERS)}
+    for seed in range(seeds):
+        for tier in tiers:
+            for slot in MODIFIER_HEATS:
+                for m in res:
+                    r = RunState(seed=2000 + seed, mode=mode)
+                    for _ in range(slot):                   # the upgrades you'd have by then
+                        o = offer(r.rng, r.upgrades, 3, mode)
+                        if o:
+                            r.upgrades.append(o[0].id)
+                    r.heat_i = slot
+                    h = r.heat
+                    h.target.modifier = m
+                    h.track = None
+                    r.prepare_heat()
+                    st = r.stats_for_heat(h)
+                    if tier == "learning":
+                        k = slot / (RUN_HEATS - 1)
+                        a, b = TIERS["novice"], TIERS["good"]
+                        skill, blunder, miss = (a[j] + (b[j] - a[j]) * k for j in range(3))
+                    else:
+                        skill, blunder, miss = TIERS[tier]
+                    ai = GhostAI(turbo=True, turbo_temp=24, skill=skill, blunder=blunder, miss=miss,
+                                 seed=seed * 7 + slot)
+                    race = Race(h.track, st, rivals=h.rivals, rival_level=h.rival_level, seed=h.seed,
+                                countdown=False)
+                    race.bike.one_button = mode == "one"
+                    pilot = OneButtonPilot(ai, C.ONE_SUPER_AT - 1 + 2 * skill) if mode == "one" else ai
+                    while not race.finished and race.time_ticks < 60 * 300:
+                        race.step(pilot.controls(race.bike))
+                    out = {"finished": race.finished, "time": race.time_ticks, "position": race.position()}
+                    res[m]["met"].append(1.0 if h.target.check(out) else 0.0)
+                    res[m]["place"].append(1.0 - (out["position"] - 1) / max(1, h.rivals))
+                    res[m]["crashes"].append(race.bike.stats_counters["crashes"])
+    return {m: {k: round(sum(v) / len(v), 3) for k, v in d.items()} for m, d in res.items()}
+
+
+def suggest_hardness(sim):
+    """Hardness 0..1 from how much each modifier lowers the target-met rate and
+    the place score vs no modifier (min-max scaled across the modifiers)."""
+    base = sim[None]
+    hurt = {m: (base["met"] - r["met"]) + 0.5 * (base["place"] - r["place"])
+            for m, r in sim.items() if m is not None}
+    lo, hi = min(hurt.values()), max(hurt.values())
+    span = hi - lo
+    return hurt, {m: round(0.5 if span < 0.02 else 0.1 + 0.8 * (h - lo) / span, 2) for m, h in hurt.items()}
+
+
+def cmd_modsim(args):
+    from run.manager import MODIFIERS, MODIFIER_HARDNESS
+    t0 = time.time()
+    sim = modsim(args.seeds, args.mode)
+    hurt, sug = suggest_hardness(sim)
+    if args.json:
+        print(json.dumps({"sim": {str(k): v for k, v in sim.items()}, "hurt": hurt, "suggested": sug,
+                          "current": MODIFIER_HARDNESS}, indent=1))
+        return
+    print(f"# Modifier sim - {args.seeds} runs x (average, learning) x heats 3 and 5, mode {args.mode} "
+          f"({time.time() - t0:.0f}s)\n")
+    b = sim[None]
+    print(f"{'(none)':<12} met {b['met']:.2f}  place {b['place']:.2f}  crashes {b['crashes']:.2f}")
+    for m in sorted(hurt, key=hurt.get, reverse=True):
+        r = sim[m]
+        print(f"{m:<12} met {r['met']:.2f}  place {r['place']:.2f}  crashes {r['crashes']:.2f}  "
+              f"hurt {hurt[m]:+.2f}  -> hardness {sug[m]} (now {MODIFIER_HARDNESS.get(m)})  {MODIFIERS[m][0]}")
+    print("\nSuggested MODIFIER_HARDNESS =", json.dumps(sug))
+    print("Hardest first. Only adopt a value whose 'hurt' is clearly apart from its neighbours"
+          " (rerun with more --seeds if two are within ~0.05).")
+
+
 # --- archive ------------------------------------------------------------------------------------------------
 def cmd_archive(args):
     folder = args.dir or rp.recordings_dir()
@@ -301,9 +435,12 @@ def main(argv=None):
     p = sub.add_parser("sim"); p.add_argument("--seeds", type=int, default=6)
     p.add_argument("--mode", default="one", choices=["one", "classic", "both"]); p.add_argument("--json", action="store_true")
     p = sub.add_parser("archive"); p.add_argument("--note", default=""); p.add_argument("ids", nargs="*")
+    p = sub.add_parser("mods"); p.add_argument("--json", action="store_true")
+    p = sub.add_parser("modsim"); p.add_argument("--seeds", type=int, default=4)
+    p.add_argument("--mode", default="one", choices=["one", "classic"]); p.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     {"summary": cmd_summary, "report": cmd_report, "show": cmd_show, "sim": cmd_sim,
-     "archive": cmd_archive}[args.cmd](args)
+     "archive": cmd_archive, "mods": cmd_mods, "modsim": cmd_modsim}[args.cmd](args)
 
 
 if __name__ == "__main__":

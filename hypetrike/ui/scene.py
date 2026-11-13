@@ -329,7 +329,7 @@ class RaceScene(Scene):
         cam = b.x + lead + shake
         rd = self.renderer
         rd.draw_backdrop(surf, cam, self.bg_scroll)
-        rd.draw_track(surf, self.track, cam)
+        rd.draw_track(surf, self.track, cam, ticks=self.race.time_ticks)
         from ui.art import LIVERIES
         pool = [k for k in LIVERIES if k != self.livery]
         bikes = [(rb, pool[i % len(pool)], False)

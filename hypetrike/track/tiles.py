@@ -18,6 +18,10 @@ FLAT, RAMP_S, RAMP_L, COOLANT, MUD, DEBRIS, START, GAP, WHOOPS, WATER, PAD_S, PA
 # exit height of one column matches the entry height of the next (see
 # edge_heights). Two plateau levels: LO and HI.
 UP_LO, TOP_LO, DOWN_LO, UP_HI, TOP_HI, DOWN_HI, KICK, FIN = range(12, 20)
+# Raised decks on pillars (open underneath): a steep on-ramp, the deck, a
+# descent off the end, a kicker on the deck, a broken span (a pit you must
+# jump) and a drawbridge whose leaf lifts and lowers on a fixed cycle.
+DECK_UP, DECK, DECK_DOWN, DECK_KICK, DECK_GAP, DRAW = range(20, 26)
 NONE = -1
 
 TILE_NAMES = {
@@ -27,15 +31,21 @@ TILE_NAMES = {
     PAD_S: "Small pad", PAD_L: "Large pad",
     UP_LO: "Rise", TOP_LO: "Mesa", DOWN_LO: "Descent", UP_HI: "Rise 2",
     TOP_HI: "High mesa", DOWN_HI: "Descent 2", KICK: "Mesa kicker", FIN: "Fin",
+    DECK_UP: "Deck ramp", DECK: "Deck", DECK_DOWN: "Deck end", DECK_KICK: "Deck kicker",
+    DECK_GAP: "Broken span", DRAW: "Drawbridge",
 }
 # Coolant / heat pads come in three sizes (COOLANT is the medium one). In
 # one-button mode each adds this many heat bars; in classic mode any pad cools.
 PAD_BARS = {PAD_S: 1, COOLANT: 2, PAD_L: 3}
 PADS = tuple(PAD_BARS)
 TERRAIN_TILES = (FLAT, RAMP_S, RAMP_L, START, GAP, WHOOPS,
-                 UP_LO, TOP_LO, DOWN_LO, UP_HI, TOP_HI, DOWN_HI, KICK, FIN)
+                 UP_LO, TOP_LO, DOWN_LO, UP_HI, TOP_HI, DOWN_HI, KICK, FIN,
+                 DECK_UP, DECK, DECK_DOWN, DECK_KICK, DECK_GAP, DRAW)
 # Tiles you ride up and launch from (mouse-mode ramp lean, etc.).
-RAMPS = (RAMP_S, RAMP_L, UP_LO, UP_HI, KICK, FIN)
+RAMPS = (RAMP_S, RAMP_L, UP_LO, UP_HI, KICK, FIN, DECK_UP, DECK_KICK)
+# Holes you fall into (crash "pit"): the ground-level pit and the deck's broken span.
+PITS = (GAP, DECK_GAP)
+DECKS = (DECK_UP, DECK, DECK_DOWN, DECK_KICK, DECK_GAP, DRAW)
 SURFACE_TILES = (PAD_S, COOLANT, PAD_L, MUD, DEBRIS, WATER)
 
 # --- ground materials ---------------------------------------------------------------
@@ -44,8 +54,37 @@ MATERIAL_NAMES = {DIRT: "Dirt", GRASS: "Grass", SAND: "Sand"}
 MATERIALS = (DIRT, GRASS, SAND)
 
 # --- height profiles: polylines of (local_x, height) -----------------------------
+PIT_DEPTH = -70
 MESA_LO = 28
 MESA_HI = 56
+DECK_H = MESA_HI
+
+
+# Drawbridge cycle (ticks). The leaf is down (rideable) for most of the cycle,
+# lifts, stays up (an open hole: fall in and you crash), then lowers again.
+DRAW_PERIOD = 170
+DRAW_MOVE = 24        # ticks to lift or lower the leaf
+DRAW_UP = 24          # ticks fully up
+DRAW_OPEN_AT = 0.45   # the hole counts as open while the leaf is lifted past this
+
+
+def draw_lift(ticks, col):
+    """0 (down) .. 1 (fully up) for the drawbridge in column `col` at race tick `ticks`.
+    Each column runs its own phase so two bridges don't move in step."""
+    t = (ticks + col * 53) % DRAW_PERIOD
+    if t < DRAW_MOVE:
+        return t / DRAW_MOVE
+    t -= DRAW_MOVE
+    if t < DRAW_UP:
+        return 1.0
+    t -= DRAW_UP
+    if t < DRAW_MOVE:
+        return 1.0 - t / DRAW_MOVE
+    return 0.0
+
+
+def draw_open(ticks, col):
+    return draw_lift(ticks, col) > DRAW_OPEN_AT
 
 
 def _whoops():
@@ -74,8 +113,15 @@ PROFILES = {
     KICK:    [(0, MESA_LO), (48, MESA_LO + 22), (56, MESA_LO + 22), (74, MESA_LO), (TILE_W, MESA_LO)],
     # A tall, steep spike: hit it with speed or get bucked.
     FIN:     [(0, 0), (44, 40), (50, 40), (TILE_W, 0)],
+    # Decks: a steep (~38 deg) on-ramp that flings you up onto the deck, a
+    # descent like the mesa ones, a kicker on the deck, and a broken span.
+    DECK_UP:   [(0, 0), (72, DECK_H), (TILE_W, DECK_H)],
+    DECK:      [(0, DECK_H), (TILE_W, DECK_H)],
+    DECK_DOWN: [(0, DECK_H), (16, DECK_H), (TILE_W, 0)],
+    DECK_KICK: [(0, DECK_H), (50, DECK_H + 15), (58, DECK_H + 15), (62, DECK_H), (TILE_W, DECK_H)],
+    DECK_GAP:  [(0, DECK_H), (2, PIT_DEPTH), (TILE_W - 2, PIT_DEPTH), (TILE_W, DECK_H)],
+    DRAW:      [(0, DECK_H), (TILE_W, DECK_H)],
 }
-PIT_DEPTH = -70
 
 
 def edge_heights(tile):
@@ -134,11 +180,11 @@ class Track:
 
     def slope(self, x):
         # One-sided near pit walls so a landing on the lip reads as flat ground.
-        here_gap = self.terrain_at(x) == GAP
+        here_gap = self.terrain_at(x) in PITS
         a, b = x - 2, x + 2
-        if not here_gap and self.terrain_at(a) == GAP:
+        if not here_gap and self.terrain_at(a) in PITS:
             a = x
-        if not here_gap and self.terrain_at(b) == GAP:
+        if not here_gap and self.terrain_at(b) in PITS:
             b = x
         if b == a:
             return 0.0
@@ -176,10 +222,12 @@ class Track:
 
 # One char per terrain tile (track strings, share codes, generator segments).
 # Plateau tiles: u/t/d rise/top/descent at the low level, U/T/D at the high
-# level, k kicker on a low plateau, f fin.
+# level, k kicker on a low plateau, f fin. Decks: o on-ramp, b deck, e deck
+# end (descent), K deck kicker, x broken span, z drawbridge.
 TERRAIN_CHARS = {".": FLAT, "s": RAMP_S, "L": RAMP_L, "g": GAP, "w": WHOOPS, "S": START,
                  "u": UP_LO, "t": TOP_LO, "d": DOWN_LO, "U": UP_HI, "T": TOP_HI,
-                 "D": DOWN_HI, "k": KICK, "f": FIN}
+                 "D": DOWN_HI, "k": KICK, "f": FIN,
+                 "o": DECK_UP, "b": DECK, "e": DECK_DOWN, "K": DECK_KICK, "x": DECK_GAP, "z": DRAW}
 
 
 def make_track(spec, laps=2, name="Static", theme="valley"):

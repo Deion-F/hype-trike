@@ -106,6 +106,7 @@ ROUGH_SPEED_KEEP = 0.5
 ROUGH_WOBBLE_TICKS = 24
 MICRO_HOP_TICKS = 14         # hops shorter than this never crash
 MICRO_HOP_SPEED_KEEP = 0.8
+WALL_CATCH = 16             # px below a deck's far lip you can still scramble up (broken span)
 MUD_SPEED = 18              # speed limit on mud
 DEBRIS_SAFE_SPEED = 10      # hitting debris at or below this only stops you
 DEBRIS_CLEAR_H = 12         # air height that clears debris

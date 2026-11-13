@@ -9,7 +9,7 @@ import random
 
 import config as C
 from bike import Bike, Controls, base_stats
-from track.tiles import MUD, DEBRIS, GAP, WATER, PADS
+from track.tiles import MUD, DEBRIS, WATER, PADS, PITS, DRAW, draw_open
 
 
 class GhostAI:
@@ -27,6 +27,8 @@ class GhostAI:
         self._jump_error = 0.0
         self._was_air = False
         self._lane_cooldown = 0
+        self._bridge_col = None         # drawbridge being timed, and whether to ignore it
+        self._bridge_blind = False
 
     # ------------------------------------------------------------------------
     def controls(self, bike: Bike) -> Controls:
@@ -47,12 +49,63 @@ class GhostAI:
         self._was_air = False
         if self.turbo and bike.temp < self.turbo_temp and bike.wobble == 0:
             c.b = True
+        if self._wait_for_bridge(bike):
+            c.a = c.b = False
         self._avoid(bike, c)
         return c
 
+    def _wait_for_bridge(self, bike):
+        """Drawbridge ahead: keep the throttle on if we'd cross while it's down,
+        otherwise ease off as long as a later, safe crossing is still reachable
+        by coasting (checked every tick, so it throttles back up in time)."""
+        tr = bike.track
+        col0 = tr.col_at(bike.x)
+        for k in range(0, 15):
+            col = (col0 + k) % tr.ncols
+            if tr.terrain[col] != DRAW:
+                continue
+            if col != self._bridge_col:
+                self._bridge_col = col
+                self._bridge_blind = self.rng.random() < self.miss * 1.5
+            if self._bridge_blind:
+                return False
+            d = max(0.0, (bike.x // C.TILE_W + k) * C.TILE_W - bike.x)
+            now = bike.ticks
+            top = bike.max_speed(False)
+            accel = max(1.0, bike.stats.accel_interval)
+
+            def arrival(coast_for):
+                """Ticks to reach the bridge and to clear it: coast for
+                `coast_for` ticks, then full throttle (accelerating to top)."""
+                x, v, t, t_in = 0.0, max(bike.speed, 1.0), 0, None
+                while t < 420:
+                    t += 1
+                    if t <= coast_for:
+                        v = max(0.0, v - 1.0 / C.COAST_INTERVAL)
+                    else:
+                        v = min(top, v + 1.0 / accel)
+                    x += v * C.SPEED_TO_PX
+                    if t_in is None and x >= d:
+                        t_in = t
+                    if x >= d + C.TILE_W:
+                        return t_in, t
+                return t_in or t, t
+
+            def safe(coast_for):
+                t_in, t_out = arrival(coast_for)
+                return not any(draw_open(now + t, col) for t in range(t_in - 3, t_out + 4, 2))
+
+            if safe(0):
+                return False
+            for wait in range(6, 240, 6):
+                if safe(wait):
+                    return True       # a coast now and throttle later gets across
+            return False
+        return False
+
     def _steer_air(self, bike, c):
         t, land_x = predict_landing(bike)
-        if bike.track.terrain_at(land_x) == GAP:
+        if bike.track.terrain_at(land_x) in PITS:
             base = 0.0            # heading for a pit: level out and hope
         else:
             base = math.degrees(math.atan(bike.track.slope(land_x)))

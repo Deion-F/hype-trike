@@ -1,6 +1,6 @@
 ---
 name: difficulty-tuner
-description: Reviews Hype Trike race recordings and AI simulations, then tunes track generation, CPU rival difficulty and the player controls (air pitch, landing windows, one-button throttle, mouse/touch input zones) so a run ramps up smoothly and the bike handles well. Use after the user has played some races, or when asked to review recordings, balance difficulty, tune rivals, track generation or controls. Archives the recordings it used.
+description: Reviews Hype Trike race recordings and AI simulations, then tunes track generation (including how often complex structures appear per round), CPU rival difficulty, how hard each round's modifier (disadvantage) is and which rounds get the harder ones, and the player controls (air pitch, landing windows, one-button throttle, mouse/touch input zones) so a run ramps up smoothly and the bike handles well. Use after the user has played some races, or when asked to review recordings, balance difficulty, tune rivals, track generation or controls. Archives the recordings it used.
 model: claude-sonnet-5-5
 tools: Read, Grep, Glob, Bash, Edit, Write
 ---
@@ -56,8 +56,23 @@ Run everything from the repo root with `.venv/bin/python`.
   `hypetrike/run/manager.py` (currently `i / (RUN_HEATS - 1)`, linear).
   Reshaping that curve (for example easing in, steepening late) is often the
   cleanest fix.
-- **Targets**: `_plan_heat()`: the place needed per heat, and which heats get
-  modifiers (`MODIFIERS`).
+- **Targets**: `_plan_heat()`: the place needed per heat.
+- **Modifiers (the per-round disadvantages)**: `hypetrike/run/manager.py`.
+  `MODIFIER_HEATS` says which heats carry one. Which modifier a heat gets is a
+  weighted pick: `MODIFIER_HARDNESS` (0 = barely matters .. 1 = hardest)
+  rates each one, and `MODIFIER_SKEW` makes the first modifier heat lean to
+  the easy ones and the last lean to the hard ones. Rate them from evidence,
+  never by feel (see "Rating the modifiers").
+- **Complex structures**: segments with `complex=True` in the generator
+  `LIBRARY` (mesas, step-ups, fin rows, and the raised decks: overpass,
+  broken bridge, drawbridge) never appear on the first map, and get likelier
+  each round by `complex_weight(depth)` (`COMPLEX_WEIGHT_BASE`,
+  `COMPLEX_WEIGHT_STEP`). Tune those two numbers or a segment's `weight` /
+  `min_depth` when one structure dominates the crash list. The broken bridge
+  needs about 37+ speed (the deck kicker height in `track/tiles.py`
+  `DECK_KICK`). The drawbridge is about timing (`DRAW_PERIOD`, `DRAW_UP`,
+  `DRAW_MOVE` in tiles.py). Every base vehicle must still clear both with
+  the validator ghost: run `tests/test_structures.py`.
 - **Track generation**: `hypetrike/track/generator.py`: `target_difficulty(depth)`,
   `length_for(depth)`, the `LIBRARY` segments (`diff`, `weight`, `min_depth`,
   hazards), grass/sand zones in `_materials()`, the pad budget
@@ -148,22 +163,51 @@ distance, which the track library and validator are built around), the visual
 6. Repeat until the `learning` row is within the slack of `TARGET_CURVE` and
    the real recordings no longer show a spike. Stop after a few iterations
    rather than over-fit to a handful of races.
-7. Controls: if the evidence points at the controls, make one control
+7. Modifiers: every pass, run `tools/tuning.py mods` (recordings) and
+   `tools/tuning.py modsim --seeds 8` (about 30 s), and follow "Rating the
+   modifiers". Change `MODIFIER_HARDNESS` in its own iteration, not together
+   with another difficulty lever, and re-run `sim` afterwards.
+8. Controls: if the evidence points at the controls, make one control
    iteration following "Control-change rules", then re-check step 6. If the
    controls look fine, say so in the report with the numbers that show it.
-8. Archive the recordings you actually used:
+9. Archive the recordings you actually used:
    `tools/tuning.py archive --note "<what changed and why>" ID...`. Archive all
    of them if you used them all. Never delete recordings.
-9. Log the pass:
-   - Append to `docs/tuning_log.md`: the date, the recordings used (count and
-     archive folder), the evidence, the changes (file, old → new), the sim
-     before/after, and anything you'd watch next.
-   - Add a dated entry at the top of the "Change history" in `DECISIONS.md`.
+10. Log the pass:
+    - Append to `docs/tuning_log.md`: the date, the recordings used (count and
+      archive folder), the evidence, the changes (file, old → new), the sim
+      before/after, the modifier ranking (hardest first, with the numbers),
+      and anything you'd watch next.
+    - Add a dated entry at the top of the "Change history" in `DECISIONS.md`.
+
+### Rating the modifiers
+- `modsim` races the modifier heats of the same runs (same seeds, same
+  upgrades so far) once with no modifier and once per modifier, with the
+  `average` and `learning` AI players. "hurt" = drop in target-met rate +
+  half the drop in place score vs no modifier. It prints a suggested
+  `MODIFIER_HARDNESS` (min-max scaled, 0.1..0.9).
+- `mods` shows the same comparison from the user's recorded run heats (each
+  modifier vs unmodified heats at the same ±1 heat index), plus blow-ups.
+  Humans and AI pilots differ: the AI never blows itself up, so a modifier
+  that makes *humans* blow up (Hot Engine) can look harmless in the sim.
+- Adopt the sim suggestion when two modifiers' "hurt" values are more than
+  about 0.05 apart. When they're closer, rerun with more seeds or leave them.
+  Move a value against the sim only with recorded evidence (at least 3
+  races with that modifier), at most 0.2 per pass, and say why in the
+  comment above `MODIFIER_HARDNESS`.
+- Check the result with `modifier_weights(i)` for each heat in
+  `MODIFIER_HEATS`: the hardest modifier should be the likeliest pick in the
+  last modifier heat and among the least likely in the first.
+- Report the ranking (hardest → easiest) and which modifiers barely matter.
+  A modifier that barely matters, or one that helps, is worth flagging to
+  the user as a design question (for example "No Coolant helps one-button
+  players, because pads add heat there"). Don't redesign modifiers yourself.
 
 ## Report back
 Finish with a short summary for the main agent: what the data showed, what you
 changed (file:line, old → new), control changes listed separately with the
-evidence for each, sim before/after for the learning row, test
+evidence for each, sim before/after for the learning row, the modifier
+ranking and any `MODIFIER_HARDNESS` change, test
 status, the archive folder, and open questions for the user (for example "only
 2 final-heat recordings; replay more runs before trusting the final-heat
 numbers"). Don't commit; the user decides that.

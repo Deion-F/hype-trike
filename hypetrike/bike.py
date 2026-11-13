@@ -7,7 +7,8 @@ import math
 from dataclasses import dataclass, field, replace
 
 import config as C
-from track.tiles import (GAP, MUD, DEBRIS, WATER, DIRT, GRASS, SAND, PADS, PAD_BARS)
+from track.tiles import (GAP, MUD, DEBRIS, WATER, DIRT, GRASS, SAND, PADS, PAD_BARS,
+                         PITS, DECK_GAP, DRAW, draw_open, edge_heights)
 
 
 @dataclass
@@ -182,7 +183,7 @@ class Bike:
         if not self.airborne or self.state != "ride":
             return False
         t, x = self.predicted_landing()
-        if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x) == GAP:
+        if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x) in PITS:
             return False
         slope = math.degrees(math.atan(self.track.slope(x)))
         return abs(self.angle - slope) <= self.stats.land_perfect
@@ -233,6 +234,8 @@ class Bike:
             self._air(ctl, ev)
         else:
             self._ground(ctl, ev)
+        if self.state == "ride" and not self.airborne and self._over_open_bridge():
+            self._fall_through(ev)
         if self.state == "ride" and not self.airborne:
             self._surfaces(ev)
         if self.wobble > 0:
@@ -429,15 +432,34 @@ class Bike:
         self.h += self.vy
         g = self.track.ground(self.x)
         if self.h <= g:
+            if g - self.h > C.WALL_CATCH and self.track.terrain_at(self.x - C.TILE_W * 0.5) in (DECK_GAP, DRAW):
+                # Came up short of a broken span / open drawbridge: hit the far
+                # wall and drop into the hole.
+                self.x = (int(self.x // C.TILE_W)) * C.TILE_W - 6
+                self.h = min(self.h, g)
+                self._crash(ev, "pit")
+                return
             self.h = g
             self.airborne = False
             self._land(ev)
+            if self.state == "ride" and self._over_open_bridge():
+                self._fall_through(ev)
+
+    def _over_open_bridge(self):
+        col = self.track.col_at(self.x)
+        return self.track.terrain[col] == DRAW and draw_open(self.ticks, col)
+
+    def _fall_through(self, ev):
+        """Rode (or landed) onto a lifted drawbridge: straight into the hole."""
+        self.h = self.track.ground(self.x) - 40
+        self._crash(ev, "pit")
 
     def _land(self, ev):
         s = self.stats
         self.stats_counters["landings"] += 1
-        if self.track.terrain_at(self.x) == GAP:
-            if self.h < -10:
+        here = self.track.terrain_at(self.x)
+        if here in PITS:
+            if self.h < edge_heights(here)[1] - 10:
                 self._crash(ev, "pit")
                 return
             # Caught the far lip: pop up onto the next column.
@@ -568,7 +590,7 @@ class Bike:
             self.x += max(0.0, 2.5 - elapsed * 0.14)   # bike tumbles a bit
         if self.timer <= 0:
             # Respawn on solid ground: walk out of a pit to the next column.
-            if self.track.terrain_at(self.x) == GAP:
+            while self.track.terrain_at(self.x) in PITS or self._over_open_bridge():
                 self.x = (int(self.x // C.TILE_W) + 1) * C.TILE_W + 2
             self.h = self.track.ground(self.x)
             self.vy = 0.0
@@ -593,7 +615,7 @@ class Bike:
 
     def _move_ground(self):
         self.x += self.vx
-        if self.track.terrain_at(self.x) == GAP:
+        if self.track.terrain_at(self.x) in PITS or self._over_open_bridge():
             # Rolled into a pit while stalled: hop to the far edge.
             self.x = (int(self.x // C.TILE_W) + 1) * C.TILE_W + 2
         self.h = self.track.ground(self.x)

@@ -15,13 +15,17 @@ Segments can also build elevated structures from plateau tiles (see
 track.tiles.TERRAIN_CHARS): tabletops, two-tier step-ups, kickers on a mesa,
 rows of steep fins. Every segment starts and ends at ground level.
 
+Raised decks on pillars (overpass, broken bridge, drawbridge) are the most
+complex structures. Complex segments never appear on the first map (depth 0)
+and get likelier every round after that (complex_weight).
+
 Later depths add ground-material zones (grass, sand) where the unlockable
 vehicles grip better (decision 0.4).
 """
 import random
 
 import config as C
-from track.tiles import (Track, FLAT, START, GAP, COOLANT, MUD, DEBRIS, WATER, NONE,
+from track.tiles import (Track, FLAT, START, GAP, DECK_GAP, DECK, DRAW, DECKS, COOLANT, MUD, DEBRIS, WATER, NONE,
                          DIRT, GRASS, SAND, PAD_S, PAD_L, PADS, TERRAIN_CHARS, edge_heights)
 
 T = TERRAIN_CHARS
@@ -29,7 +33,7 @@ T = TERRAIN_CHARS
 
 class Segment:
     def __init__(self, name, terrain, diff, runway=0, hazards=(), weight=1.0,
-                 min_depth=0, heat_discount=0.0):
+                 min_depth=0, heat_discount=0.0, complex=False):
         self.name = name
         self.terrain = terrain          # terrain chars
         self.diff = diff                # 1 (easy) .. 5 (hard)
@@ -38,6 +42,10 @@ class Segment:
         self.weight = weight
         self.min_depth = min_depth
         self.heat_discount = heat_discount  # columns spent airborne (no heat)
+        # Complex structure: never on the first map, likelier every round after.
+        self.complex = complex
+        if complex:
+            self.min_depth = max(1, min_depth)
 
     @property
     def ncols(self):
@@ -83,20 +91,34 @@ LIBRARY = [
     Segment("fin", "..f....", 2, runway=2, heat_discount=2),
     Segment("long mesa", "..utttttd...", 2, heat_discount=2, weight=0.8,
             hazards=((4, MUD, 1, 2),), min_depth=1),
-    Segment("step-up", "..utttUTTDd...", 3, runway=2, heat_discount=4, min_depth=1, weight=1.2),
-    Segment("fin row", ".f.....f.....f.....", 3, runway=2, heat_discount=5, min_depth=1),
-    Segment("mesa jump", "..L.uttd...", 3, runway=3, heat_discount=4, min_depth=1),
-    Segment("mesa kicker", "..uttkttd...", 3, runway=2, heat_discount=4, min_depth=1),
+    Segment("step-up", "..utttUTTDd...", 3, runway=2, heat_discount=4, min_depth=1, weight=1.2, complex=True),
+    Segment("fin row", ".f.....f.....f.....", 3, runway=2, heat_discount=5, min_depth=1, complex=True),
+    Segment("mesa jump", "..L.uttd...", 3, runway=3, heat_discount=4, min_depth=1, complex=True),
+    Segment("mesa kicker", "..uttkttd...", 3, runway=2, heat_discount=4, min_depth=1, complex=True),
     Segment("muddy mesa", "..utttttd...", 3, heat_discount=2, min_depth=2,
-            hazards=((3, MUD, 1, 2), (5, DEBRIS, 1, 2))),
-    Segment("twin peaks", "..uUTDtUTDd....", 4, runway=2, heat_discount=6, min_depth=2),
-    Segment("stair kicker", "..utkUTTDd....", 4, runway=3, heat_discount=5, min_depth=3),
+            hazards=((3, MUD, 1, 2), (5, DEBRIS, 1, 2)), complex=True),
+    Segment("twin peaks", "..uUTDtUTDd....", 4, runway=2, heat_discount=6, min_depth=2, complex=True),
+    Segment("stair kicker", "..utkUTTDd....", 4, runway=3, heat_discount=5, min_depth=3, complex=True),
     Segment("skyway", "..uUTTTTDd....", 4, runway=2, heat_discount=4, min_depth=2,
-            hazards=((4, DEBRIS, 1, 2), (6, MUD, 1, 2))),
-    Segment("fin gauntlet", ".ff.....f.....ff......", 4, runway=3, heat_discount=7, min_depth=2, weight=0.7),
-    Segment("mesa canyon", "..utttd.g.....", 4, runway=4, heat_discount=5, min_depth=3, weight=0.7),
+            hazards=((4, DEBRIS, 1, 2), (6, MUD, 1, 2)), complex=True),
+    Segment("fin gauntlet", ".ff.....f.....ff......", 4, runway=3, heat_discount=7, min_depth=2, weight=0.7,
+            complex=True),
+    Segment("mesa canyon", "..utttd.g.....", 4, runway=4, heat_discount=5, min_depth=3, weight=0.7,
+            complex=True),
     Segment("summit", "..utUTTDtkd...f....", 5, runway=3, heat_discount=8, min_depth=3, weight=0.7,
-            hazards=((5, MUD, 1, 2),)),
+            hazards=((5, MUD, 1, 2),), complex=True),
+    # --- raised decks on pillars -----------------------------------------------
+    # o on-ramp, b deck, e deck end, K deck kicker, x broken span, z drawbridge.
+    # Overpass: a steep on-ramp flings you up onto a long deck. Land level.
+    Segment("overpass", "..obbbbbbe....", 3, runway=3, heat_discount=5, complex=True),
+    # Broken bridge (skill: carry speed): a kicker on the deck has to throw you
+    # over a missing span. Cold and slow (under ~37 speed), you drop in.
+    Segment("broken bridge", "..obbbbbKxbbbe....", 4, runway=4, heat_discount=7, min_depth=2,
+            complex=True),
+    # Drawbridge (skill: timing): the leaf lifts and lowers on a cycle. Ease off
+    # on the deck so you arrive while it's down; ride onto it lifted and you fall.
+    Segment("drawbridge", "..obbbbbbzbbe....", 4, runway=3, heat_discount=5, min_depth=2,
+            complex=True),
 ]
 
 THEME_BY_DEPTH = ["valley", "desert", "night", "stadium", "desert", "night", "stadium", "valley"]
@@ -121,6 +143,18 @@ def length_for(depth):
     return 46 + depth * 6
 
 
+COMPLEX_WEIGHT_BASE = 0.55   # complex-structure weight multiplier at depth 1 ...
+COMPLEX_WEIGHT_STEP = 0.35   # ... plus this per round after that
+
+
+def complex_weight(depth):
+    """Weight multiplier for complex structures: none on the first map, then
+    more likely every round."""
+    if depth <= 0:
+        return 0.0
+    return COMPLEX_WEIGHT_BASE + COMPLEX_WEIGHT_STEP * (depth - 1)
+
+
 def _pick(rng, depth, runway, diff_target, last_name):
     cands = []
     for s in LIBRARY:
@@ -128,6 +162,10 @@ def _pick(rng, depth, runway, diff_target, last_name):
             continue
         # prefer segments near the target difficulty
         w = s.weight * (2.0 ** (-abs(s.diff - diff_target)))
+        if s.complex:
+            w *= complex_weight(depth)
+        if w <= 0:
+            continue
         cands.append((s, w))
     total = sum(w for _, w in cands)
     r = rng.random() * total
@@ -265,7 +303,8 @@ def _materials(rng, track, depth, modifiers):
         length = rng.randint(6, 10 + depth * 2)
         start = rng.randint(6, max(7, n - length - 2))
         for i in range(start, min(n - 1, start + length)):
-            track.material[i] = m
+            if track.terrain[i] not in DECKS:      # decks are planks: no grass or sand up there
+                track.material[i] = m
 
 
 def _soften(track, col):
@@ -276,6 +315,9 @@ def _soften(track, col):
         c %= n
         if track.terrain[c] == GAP:
             track.terrain[c] = FLAT
+            changes += 1
+        elif track.terrain[c] in (DECK_GAP, DRAW):     # mend the span / fix the bridge down
+            track.terrain[c] = DECK
             changes += 1
         for lane in range(C.LANES):
             if track.surface[lane][c] in (DEBRIS, MUD, WATER):

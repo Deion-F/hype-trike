@@ -1,6 +1,6 @@
 ---
 name: tune
-description: Run the difficulty-tuner subagent on Hype Trike. It reviews race recordings and AI sims, tunes track generation, CPU rival difficulty and the player controls, archives the recordings it used, and logs the pass. Use when the user types /tune or asks to tune or balance difficulty.
+description: Run the difficulty-tuner subagent on Hype Trike. It reviews race recordings and AI sims, tunes track generation, CPU rival difficulty, how hard each round's modifier is (harder ones later) and the player controls, archives the recordings it used, and logs the pass. Use when the user types /tune or asks to tune or balance difficulty.
 argument-hint: "[focus, e.g. 'final heat feels too hard' or 'classic mode only']"
 ---
 
@@ -11,7 +11,8 @@ Prompt to give it:
 
 > Run a full tuning pass following your workflow: summary and report on the
 > live recordings, inspect the worst races, baseline sim, small changes,
-> re-sim, then check the player controls and tune them if the evidence
+> re-sim, rate the modifiers (mods + modsim) and update MODIFIER_HARDNESS if
+> the evidence supports it, then check the player controls and tune them if the evidence
 > points there, run the tests, archive the recordings you used, and log the pass in
 > docs/tuning_log.md and DECISIONS.md. Don't commit.
 >
@@ -25,6 +26,6 @@ put the body of `.claude/agents/difficulty-tuner.md` (everything after the
 frontmatter) before the prompt above, so it follows the same instructions.
 
 When it reports back, relay its summary to the user: what the data showed, the
-changes (with file links, control changes called out separately so the user can veto them), the learning row before/after, test status, the
+changes (with file links, control changes called out separately so the user can veto them), the learning row before/after, the modifier ranking, test status, the
 archive folder, and its open questions. The user can't see the agent's report,
 so include everything that matters. Don't commit.
