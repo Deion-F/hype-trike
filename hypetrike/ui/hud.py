@@ -119,7 +119,7 @@ def temp_gauge(surf, temp, x, y, w=150, h=10, ticks=0):
 
 
 def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
-    """One-button heat gauge, 0..overheat: normal | BOOST band | red SUPER window."""
+    """One-button heat gauge, 0..blow-up: normal | BOOST band | OVERHEATING window."""
     panel(surf, (x - 4, y - 16, w + 8, h + 22), 150)
     full = C.TEMP_OVERHEAT
     px = lambda t: x + int(w * max(0.0, min(full, t)) / full)        # noqa: E731
@@ -136,12 +136,12 @@ def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
     surf.fill(col, (x, y, px(temp) - x, h))
     surf.fill((250, 250, 250), (b0, y - 2, 1, h + 4))
     pygame.draw.rect(surf, C.DANGER, (s0, y - 1, x + w - s0, h + 2), 1)
-    label = {0: ("HEAT", C.HUD_FG), 1: ("BOOST", (255, 170, 70)), 2: ("SUPER BOOST!", C.DANGER)}
+    label = {0: ("HEAT", C.HUD_FG), 1: ("BOOST", (255, 170, 70)), 2: ("OVERHEATING!", C.DANGER)}
     s, c = label.get(boost_level, label[0])
     text(surf, s, (x, y - 14), 16, c)
 
 
-def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=True):
+def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=False):
     b = race.bike
     panel(surf, (6, 6, 150, 40))
     lap = min(race.laps_done + 1, race.track.laps)
@@ -161,15 +161,15 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=True
         for i, line in enumerate(extra_left):
             text(surf, line, (12, 52 + i * 14), 16)
     gx = width // 2 - 75
-    if not heat_bar:
-        pass                    # heat shown on the rider instead (setting "heat_gauge")
-    elif getattr(b, "one_button", False):
-        lvl = b.boost_level if b.state == "ride" else 0
-        heat_gauge_one(surf, b.temp, lvl, gx, C.VIEW_H - 18, ticks=ticks)
-    else:
-        temp_gauge(surf, b.temp, gx, C.VIEW_H - 18, ticks=ticks)
-    text(surf, f"{int(b.speed):02d}", (gx + 162, C.VIEW_H - 24), 22)
-    text(surf, "SPD", (gx + 162, C.VIEW_H - 34), 12)
+    if heat_bar:                # the old bottom bar (off: heat is the curved bar over the rider)
+        if getattr(b, "one_button", False):
+            lvl = b.boost_level if b.state == "ride" else 0
+            heat_gauge_one(surf, b.temp, lvl, gx, C.VIEW_H - 18, ticks=ticks)
+        else:
+            temp_gauge(surf, b.temp, gx, C.VIEW_H - 18, ticks=ticks)
+    panel(surf, (width // 2 - 26, C.VIEW_H - 36, 52, 32), 150)
+    text(surf, "SPD", (width // 2, C.VIEW_H - 28), 12, anchor="center")
+    text(surf, f"{int(b.speed):02d}", (width // 2, C.VIEW_H - 13), 22, anchor="center")
     if b.state == "overheat" and (ticks // 10) % 2 == 0:
         text(surf, "OVERHEAT!", (width // 2, 120), 40, C.DANGER, anchor="center")
     if race.countdown > 0:

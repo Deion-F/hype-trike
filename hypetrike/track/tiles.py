@@ -201,6 +201,11 @@ class Track:
             hs.extend(_sample(prof, lx) for lx in range(TILE_W))
         return hs
 
+    @property
+    def hoops(self):
+        """Flaming hoops: [(x, height, lane)], kept in meta so recordings carry them."""
+        return self.meta.get("hoops") or ()
+
     def tile(self, col, lane=None):
         """The terrain tile lane `lane` rides in column col (None = front lanes)."""
         return lane_tile(self.terrain[col], lane)

@@ -256,7 +256,7 @@ class GarageScene(BackdropScene):
             big2 = pygame.transform.scale(layer, (layer.get_width() * 6 // 5, layer.get_height() * 6 // 5))
             bx = x + 4 + k * (panel_w - 16) // 3
             surf.blit(big2, (bx, y + 4))
-            hud.text(surf, ("cold", "boost", "red")[k], (bx + big2.get_width() * 2 // 3, y + 88), 15,
+            hud.text(surf, ("cold", "boost", "overheating")[k], (bx + big2.get_width() * 2 // 3, y + 88), 15,
                      (200, 196, 220), anchor="center")
 
     # -- Starter Kit ----------------------------------------------------------------------

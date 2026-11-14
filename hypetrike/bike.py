@@ -147,6 +147,8 @@ class Bike:
         self.adrenaline = 0              # ticks of Adrenaline left
         self.comeback = 0                # ticks of Comeback left
         self.drafting = False            # set by the race: a rival is just ahead in this lane
+        self.air_lane_lock = True        # setting: no new lane changes in the air (one in progress finishes)
+        self._hoop_armed = False         # flew through a flaming hoop on this jump
         self.trail = None                # set by the race: the boss trail kind we're riding in ...
         self.trail_k = 1.0               # ... and its strength (minions 0.5)
         self.heat_aura = 0.0             # boss aura: heat per tick (Heat Wave +, Sandblast -)
@@ -173,7 +175,25 @@ class Bike:
             return s.max_speed_a * max(0.0, t) / C.ONE_BOOST_AT
         if t < C.ONE_SUPER_AT:
             return s.max_speed_b * self._draft()
-        return (s.max_speed_b + s.super_extra) * self._draft()
+        return (s.max_speed_b + self._overheat_bonus()) * self._draft()
+
+    def overheat_depth(self):
+        """How deep into the overheating zone the heat is: 0 at its edge .. 1 at the
+        blow-up; None below it (and in classic mode, which has no such zone)."""
+        if not self.one_button or self.temp < C.ONE_SUPER_AT:
+            return None
+        return min(1.0, (self.temp - C.ONE_SUPER_AT) / (C.TEMP_OVERHEAT - C.ONE_SUPER_AT))
+
+    def _overheat_bonus(self):
+        """Top speed over the boost band while overheating: grows with depth, from
+        OVERHEAT_SPEED_LO x super_extra at the edge to OVERHEAT_SPEED_HI x at the top."""
+        k = self.overheat_depth() or 0.0
+        return self.stats.super_extra * (C.OVERHEAT_SPEED_LO + (C.OVERHEAT_SPEED_HI - C.OVERHEAT_SPEED_LO) * k)
+
+    def _pitch_rate(self):
+        """Air rotation rate: a set boost while overheating (heat holds in the air,
+        so it lasts the whole jump)."""
+        return self.stats.pitch_rate * (C.OVERHEAT_TURN if self.overheat_depth() is not None else 1.0)
 
     def climbing(self):
         """On the ground going up a ramp / rise: the engine doesn't heat here, so
@@ -184,8 +204,10 @@ class Bike:
         return 1.0 + self.stats.draft_bonus if self.drafting else 1.0
 
     def _accel_interval(self):
-        """Comeback: double acceleration for a while after remounting."""
-        return self.stats.accel_interval * (0.5 if self.comeback > 0 else 1.0)
+        """Comeback: double acceleration for a while after remounting. Overheating:
+        quicker the deeper in (up to OVERHEAT_ACCEL faster at the top)."""
+        k = self.overheat_depth() or 0.0
+        return self.stats.accel_interval * (0.5 if self.comeback > 0 else 1.0) * (1.0 - C.OVERHEAT_ACCEL * k)
 
     def _red_mult(self):
         """Heating rate multiplier in the red; Adrenaline slows it after a perfect landing."""
@@ -219,18 +241,41 @@ class Bike:
                 return t, x
         return max_ticks, x
 
-    def perfect_aligned(self):
-        """Mid-air on a real jump, with the nose already matching the landing
-        slope closely enough for a PERFECT if it touched down like this."""
+    def landing_error(self):
+        """Mid-air on a real jump: the nose-vs-slope error it would land with if
+        you let go now (the nose keeps dropping until touchdown). None on the
+        ground, on little hops and over pits."""
         if not self.airborne or self.state != "ride":
-            return False
+            return None
         t, x = self.predicted_landing()
         if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x, self.lane_index) in PITS:
-            return False
+            return None
         slope = math.degrees(math.atan(self.track.slope(x, self.lane_index)))
-        # the nose keeps dropping until touchdown: judge the angle it will land at
         land_angle = max(-85.0, self.angle - self.stats.nose_drop * t)
-        return abs(land_angle - slope) <= self.stats.land_perfect * self.land_mult
+        return land_angle - slope
+
+    def landing_quality(self):
+        """0 (PERFECT) .. 1 (crash) for the landing you're lined up for, or None:
+        0..0.4 inside the clean window, 0.4..0.8 in the rough band, 1 = crash.
+        Uses the same windows as the landing itself (Hex aura included)."""
+        err = self.landing_error()
+        if err is None:
+            return None
+        per = self.stats.land_perfect * self.land_mult
+        tol = self.stats.land_tolerance * self.land_mult
+        rough = C.LAND_ROUGH if err > 0 else C.LAND_ROUGH_NOSE
+        e = abs(err)
+        if e <= per:
+            return 0.0
+        if e <= tol:
+            return 0.4 * (e - per) / max(0.01, tol - per)
+        if e <= rough:
+            return 0.4 + 0.4 * (e - tol) / max(0.01, rough - tol)
+        return 1.0
+
+    def perfect_aligned(self):
+        """Mid-air on a real jump, lined up for a PERFECT if you let go now."""
+        return self.landing_quality() == 0.0
 
     def grip(self):
         return self.stats.grip.get(self.track.material_at(self.x), 1.0)
@@ -296,7 +341,7 @@ class Bike:
 
     # -- input-driven parts -----------------------------------------------------------
     def _lanes(self, ctl):
-        if not self.airborne:
+        if not self.airborne or not self.air_lane_lock:
             if ctl.lane_up and self.lane > 0:
                 self.lane -= 1
             if ctl.lane_down and self.lane < C.LANES - 1:
@@ -346,7 +391,7 @@ class Bike:
         holding = held or self.in_grace
         cap = self.max_speed(turbo) if held else self.max_speed(False) if holding else 0
         if self.boost_level == 2:
-            cap += self.stats.super_extra * self.grip()
+            cap += self._overheat_bonus() * self.grip()
         if self.track.surface_at(self.lane_index, self.x) == MUD or self.trail == "mud":
             cap = min(cap, self._mud_cap()) if holding else 0
             mud = True
@@ -519,6 +564,7 @@ class Bike:
             # The ground falls away faster than gravity: take off.
             self.airborne = True
             self.air_ticks = 0
+            self._hoop_armed = False
             self.x = new_x
             self.vy -= C.GRAVITY
             self.h += self.vy
@@ -540,21 +586,21 @@ class Bike:
             # nudge, a hold winds up to the full pitch rate.
             self.press_ticks += 1
             self.free_ticks = 0
-            self.angle -= s.pitch_rate * min(1.0, C.PRESS_START + self.press_ticks * C.PRESS_GROW)
+            self.angle -= self._pitch_rate() * min(1.0, C.PRESS_START + self.press_ticks * C.PRESS_GROW)
             return self._air_move(ev)
         self.press_ticks = 0
         if ctl.left and not ctl.right:
-            self.angle += s.pitch_rate
+            self.angle += self._pitch_rate()
             self.free_ticks = 0
         elif ctl.right and not ctl.left:
-            self.angle -= s.pitch_rate
+            self.angle -= self._pitch_rate()
             self.free_ticks = 0
         elif ctl.ramp:
             # Mouse button scheme, button up: the nose lifts, starting at the
             # drift rate and speeding up towards the full pitch rate, so a short
             # release nudges it and a long one swings it up as hard as leaning back.
             self.free_ticks += 1
-            self.angle += s.nose_drop + s.pitch_rate * min(C.RELEASE_MAX, self.free_ticks * C.RELEASE_GROW)
+            self.angle += s.nose_drop + self._pitch_rate() * min(C.RELEASE_MAX, self.free_ticks * C.RELEASE_GROW)
         else:
             self.free_ticks = 0
             self.angle -= s.nose_drop
@@ -562,9 +608,13 @@ class Bike:
 
     def _air_move(self, ev):
         self.angle = max(-85.0, min(85.0, self.angle))
+        prev_x = self.x
         self.x += self.vx
         self.vy -= C.GRAVITY
         self.h += self.vy
+        if self.track.hoops and not self._hoop_armed and self._through_hoop(prev_x):
+            self._hoop_armed = True
+            ev.append(("hoop",))
         g = self.track.ground(self.x, self.lane_index)
         if self.h > g:
             # Grace: lined up for a PERFECT just above the ground counts for a few
@@ -633,6 +683,17 @@ class Bike:
             self.speed += min(3 * s.hang_kick, s.hang_kick * self.air_ticks / C.FPS)
         graced = self._perfect_grace > 0 and abs(err) <= tol
         self._perfect_grace = 0
+        if self._hoop_armed:
+            # Through a flaming hoop: land it clean for a huge boost, land rough and it's gone.
+            self._hoop_armed = False
+            if abs(err) <= tol:
+                perfect = abs(err) <= per or graced
+                self.speed += C.HOOP_BOOST + (C.HOOP_PERFECT_EXTRA if perfect else 0)
+                if self.one_button:      # keep the engine in the boost band so it doesn't just fade
+                    self.temp = min(C.ONE_SUPER_AT - 0.5, max(self.temp, C.ONE_BOOST_AT + 3))
+                ev.append(("hoop_boost", perfect))
+            else:
+                ev.append(("hoop_lost",))
         if abs(err) <= per or graced:
             self.stats_counters["perfect"] += 1
             self.adrenaline = max(self.adrenaline, s.adrenaline_ticks)
@@ -717,7 +778,19 @@ class Bike:
         ev.append(("splash",))
 
     # -- crash / overheat --------------------------------------------------------------
+    def _through_hoop(self, prev_x):
+        """Crossed a flaming hoop's plane this tick, in its lane, inside the ring."""
+        L = self.track.length
+        a, b = prev_x % L, self.x % L
+        lane = self.lane_index
+        for hx, hh, hl in self.track.hoops:
+            crossed = a < hx <= b if a <= b else (hx > a or hx <= b)
+            if crossed and hl == lane and abs(self.h - hh) <= C.HOOP_R:
+                return True
+        return False
+
     def _crash(self, ev, reason):
+        self._hoop_armed = False
         if self.forgives_left > 0 and reason != "pit":
             self.forgives_left -= 1
             self.speed *= 0.6

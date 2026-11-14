@@ -554,3 +554,79 @@ def test_lap_clock_stops_at_the_finish():
         race.step(Controls())
     assert race.clock == stop and race.time_ticks > stop
     assert race.position() == 1                         # rivals finishing later stay behind
+
+
+def test_landing_glow_goes_green_to_red_with_the_landing_error():
+    from ui.scene import RaceScene
+    b = Bike(flat(60)); b.speed = 40
+    b.airborne = True; b.air_ticks = 20; b.h = 60; b.vy = 1.0
+    t, _ = b.predicted_landing()
+    drop = b.stats.nose_drop * t
+    qs = []
+    for err in (0.0, C.LAND_PERFECT + 2, C.LAND_TOLERANCE + 5, -(C.LAND_ROUGH_NOSE + 3)):
+        b.angle = drop + err
+        qs.append(b.landing_quality())
+    assert qs[0] == 0.0 and 0 < qs[1] <= 0.4 < qs[2] < 1.0 and qs[3] == 1.0
+    green, red = RaceScene.landing_colour(0.0), RaceScene.landing_colour(1.0)
+    assert green[1] > green[0] and red[0] > red[1]
+    b.airborne = False
+    assert b.landing_quality() is None
+
+
+def test_air_lane_lock_setting():
+    for lock, lane_after in ((True, 1), (False, 2)):
+        b = Bike(flat(60)); b.air_lane_lock = lock
+        b.speed = 40; b.airborne = True; b.air_ticks = 5; b.h = b.track.ground(b.x) + 80; b.vy = 2
+        b.step(Controls(lane_down=True))
+        for _ in range(10):
+            b.step(Controls())
+        assert b.lane == lane_after and b.airborne
+    b = Bike(flat(60)); b.speed = 40                     # a change under way at takeoff still finishes
+    b.step(Controls(lane_down=True))
+    b.airborne = True; b.h = b.track.ground(b.x) + 80; b.vy = 2
+    for _ in range(10):
+        b.step(Controls())
+    assert b.lane == 2 and b.lane_pos == 2.0
+
+
+def test_flaming_hoops_boost_a_clean_landing():
+    from track.generator import generate, place_hoops
+    a, b = generate(5, depth=2).track, generate(5, depth=2).track
+    assert a.hoops == b.hoops                           # seeded: same track, same hoops
+    assert sum(len(generate(s, depth=1).track.hoops) for s in range(8)) > 0
+    tr = flat(60)
+    tr.meta["hoops"] = [(1000.0, 40.0, 1)]
+    for land_err, boosted in ((0.0, True), (C.LAND_TOLERANCE + 6, False)):
+        bk = Bike(tr); bk.one_button = True; bk.temp = 12.0
+        bk.x, bk.speed, bk.airborne, bk.air_ticks = 1000.0 - bk.vx * 3 - 1, 40, True, 20
+        bk.speed = 40
+        bk.h, bk.vy, bk.angle = 40.0, 0.0, 0.0
+        ev = []
+        for _ in range(3):
+            ev += bk.step(Controls())
+        assert ("hoop",) in ev
+        bk.h, bk.vy = tr.ground(bk.x) + 0.5, -1.0
+        bk.angle = -land_err
+        before = bk.speed
+        ev = bk.step(Controls())
+        if boosted:
+            assert ("hoop_boost", True) in ev and bk.speed >= before + C.HOOP_BOOST
+        else:
+            assert ("hoop_lost",) in ev and bk.speed <= before
+    miss = Bike(tr); miss.x, miss.speed, miss.airborne = 990.0, 40, True
+    miss.h, miss.vy = 40.0 + C.HOOP_R + 10, 0.0
+    assert ("hoop",) not in miss.step(Controls())       # above the ring: no hoop
+
+
+def test_bike_catches_fire_past_half_the_red_window():
+    import pygame
+    if not pygame.display.get_init():
+        pygame.display.init(); pygame.display.set_mode((10, 10))
+    from ui.render import WorldRenderer
+    b = Bike(flat(50)); b.one_button = True
+    mid = C.ONE_SUPER_AT + (C.TEMP_OVERHEAT - C.ONE_SUPER_AT) * 0.5
+    for temp, lit in ((C.ONE_SUPER_AT + 1, False), (mid - 0.1, False), (mid + 0.5, True)):
+        b.temp = temp
+        assert (WorldRenderer.fire_level(b) > 0) == lit, temp
+    b.temp = C.TEMP_OVERHEAT - 0.01
+    assert WorldRenderer.fire_level(b) > 0.95

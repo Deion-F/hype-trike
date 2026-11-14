@@ -341,3 +341,19 @@ def test_button_pitch_winds_up_both_ways():
     push = Controls(right=True, ramp=True)
     tap, hold, keys = -turn(push, 4), -turn(push, 20), -turn(Controls(right=True), 20)
     assert 0 < tap < 4 * C.PITCH_RATE * 0.6 and keys * 0.75 < hold < keys
+
+
+def test_air_lane_lock_freezes_the_mouse_lane_aim(monkeypatch):
+    inp, bike = make(lanes="hover"), Bike(static_track())
+    inp.settings["air_lane_lock"] = True
+    m = Mouse(monkeypatch, inp)
+    m.move(300, lane_screen_y(1)); tick(inp, bike, 2)
+    assert bike.lane == 1
+    bike.airborne = True
+    m.move(300, lane_screen_y(3)); c = tick(inp, bike, 3)
+    assert not c.lane_down and inp.mouse_lane == 1          # aiming elsewhere mid-air does nothing
+    bike.airborne = False
+    tick(inp, bike, 3)
+    assert bike.lane == 1                                   # ... and nothing jumps lanes on landing
+    m.move(302, lane_screen_y(3) + 2); tick(inp, bike, 4)
+    assert bike.lane == 3                                   # new movement after landing steers again

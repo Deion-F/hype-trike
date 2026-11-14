@@ -196,6 +196,7 @@ def generate(seed, depth=0, modifiers=(), validate_with=None, max_attempts=8):
                 if not res["ok"]:
                     break
             if res["ok"]:
+                place_hoops(track, seed)
                 return GenResult(track, attempt + 1, softened, res)
             for _, col in res["crashes"]:
                 softened += _soften(track, col)
@@ -276,6 +277,43 @@ def _assemble(rng, depth, modifiers):
     track.meta["segments"] = [s or "runway" for s in seg_of_col] + ["finish"] * 3
     track.rebuild()
     return track
+
+
+HOOP_LAUNCH_SPEED = 45        # hoops sit on the arc a bike flies at about this speed
+HOOP_MIN_AIR = 18             # ... on jumps at least this long (ticks)
+
+
+def place_hoops(track, seed, chance=None):
+    """Flaming hoops at the top of some jumps (track.meta["hoops"]): fly a bike
+    off each launch ramp at a typical speed and put the hoop at its apex, in a
+    random lane. Hitting one asks for the right speed and a clean landing."""
+    from bike import Bike, Controls, base_stats
+    from track.tiles import RAMP_S, RAMP_L, KICK, FIN, DECK_KICK
+    chance = C.HOOP_CHANCE if chance is None else chance
+    rng = random.Random(seed * 7_919 + 31)
+    hoops, last = [], -99
+    for col, t in enumerate(track.terrain):
+        if t not in (RAMP_S, RAMP_L, KICK, FIN, DECK_KICK) or col - last < 5 or col < 3:
+            continue
+        if rng.random() >= chance:
+            continue
+        lane = rng.randrange(C.LANES)
+        b = Bike(track, base_stats("dirt"), lane=lane, x=(col - 1) * C.TILE_W)
+        b.speed = HOOP_LAUNCH_SPEED
+        apex = None
+        for _ in range(240):
+            b.speed = HOOP_LAUNCH_SPEED
+            b.step(Controls(a=True))
+            if b.state != "ride":
+                break
+            if b.airborne and (apex is None or b.h > apex[1]):
+                apex = (b.x, b.h)
+            if apex and not b.airborne:
+                break
+        if apex and b.air_ticks >= HOOP_MIN_AIR and b.state == "ride":
+            hoops.append((round(apex[0] % track.length, 1), round(apex[1], 1), lane))
+            last = col
+    track.meta["hoops"] = hoops
 
 
 def _place_coolant(rng, terrain, surface, start):

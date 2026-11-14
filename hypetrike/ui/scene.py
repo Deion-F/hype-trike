@@ -49,11 +49,13 @@ class RaceScene(Scene):
         if replay is not None:
             import replay as rp
             self.race.bike.one_button = replay["race"]["one_button"]
+            self.race.bike.air_lane_lock = replay["race"].get("air_lane_lock", True)
             self._replay_ctl = rp.unrle(replay["inputs"])
             self._replay_i = 0
             self.replay_fast = False
         else:
             self.race.bike.one_button = app.profile.settings.get("throttle_mode") == "one"
+            self.race.bike.air_lane_lock = app.profile.settings.get("air_lane_lock", True)
         self.recorder = None
         self.recording_path = None
         if replay is None and app.profile.settings.get("record_races", True):
@@ -146,6 +148,18 @@ class RaceScene(Scene):
             if k == "boss":
                 self._boss_popup(e[1], sx, sy)
                 continue
+            if k == "hoop":
+                self.popups.add("THROUGH THE HOOP!", (255, 150, 40), sx, sy - 50, 40)
+                self.app.audio.event("heatpad")
+                continue
+            if k == "hoop_boost":
+                self.popups.add("HOOP BOOST!" + (" PERFECT!" if e[1] else ""), (255, 210, 60), sx, sy - 58, 70)
+                self.renderer.emit_burst(b, (255, 140, 40), 26, 3.0)
+                self.app.audio.event("heatpad")
+                continue
+            if k == "hoop_lost":
+                self.popups.add("HOOP LOST", (200, 120, 100), sx, sy - 50, 40)
+                continue
             if k in ("perfect", "land", "rough"):
                 # Every real landing (not micro-hops): home moves to the cursor, so
                 # the air lean the hand was holding becomes the new neutral.
@@ -219,6 +233,10 @@ class RaceScene(Scene):
             for rb in self.race.rivals:             # rivals show their boost too
                 if rb.state == "ride" and rb.boost_level > 0 and abs(rb.x - b.x) < self.app.view.width:
                     self.renderer.emit_boost_sparks(rb, b.x)
+        if self.ticks % 2 == 0:
+            for bk in (b, *self.race.rivals):
+                if abs(bk.x - b.x) < self.app.view.width:
+                    self.renderer.emit_fire_embers(bk, b.x)
         if b.state == "ride" and b.boost_level == 2:
             # super boost: smoke, thicker as the heat nears the explosion
             danger = (b.temp - C.ONE_SUPER_AT) / (C.TEMP_OVERHEAT - C.ONE_SUPER_AT)
@@ -242,13 +260,25 @@ class RaceScene(Scene):
             rd.emit_dust(bk, cam, bk.boost_level > 0)
 
     YOU_TICKS = 90                     # player marker stays this long after GO
-    PERFECT_GOLD = ((255, 205, 50), 2)
+    # landing glow: green (PERFECT) -> yellow (clean) -> orange (rough) -> red (crash)
+    LANDING_COLS = ((0.0, (70, 235, 90)), (0.4, (250, 225, 60)), (0.8, (255, 140, 40)), (1.0, (240, 40, 40)))
+
+    @classmethod
+    def landing_colour(cls, q):
+        cols = cls.LANDING_COLS
+        for (q0, c0), (q1, c1) in zip(cols, cols[1:]):
+            if q <= q1:
+                k = (q - q0) / max(1e-6, q1 - q0)
+                return tuple(int(a + (b - a) * k) for a, b in zip(c0, c1))
+        return cols[-1][1]
 
     def _outline(self, b):
-        """Player outline: gold while lined up for a perfect landing, a pulsing
-        white/yellow 'this is you' outline at the start, otherwise none."""
-        if b.perfect_aligned():
-            return self.PERFECT_GOLD
+        """Player outline: mid-air it shows the landing you're lined up for, green
+        (PERFECT) through yellow and orange to red (crash); a pulsing white/yellow
+        'this is you' outline at the start; otherwise none."""
+        q = b.landing_quality()
+        if q is not None:
+            return (self.landing_colour(q), 2)
         if self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS:
             return ((255, 255, 255) if (self.ticks // 10) % 2 else C.ACCENT, 2)
         return None
@@ -302,6 +332,16 @@ class RaceScene(Scene):
         pygame.draw.polygon(surf, g, [(x - 6, y - 14), (x - 6, y - 19), (x - 3, y - 16), (x, y - 20),
                                       (x + 3, y - 16), (x + 6, y - 19), (x + 6, y - 14)])     # crown
         hud.text(surf, self._boss_info["name"], (x, y - 6), 15, g, anchor="center")
+
+    def _draw_overheating(self, surf, rd, b, cam):
+        """Above your heat gauge while it's in the top zone (faster, but it can blow)."""
+        hot_at = C.ONE_SUPER_AT if b.one_button else C.RED_AT
+        if b.state != "ride" or b.temp < hot_at:
+            return
+        sx, sy = rd.bike_screen_pos(b, cam)
+        col = C.DANGER if (self.ticks // 6) % 2 == 0 else (255, 220, 160)
+        hud.text(surf, "OVERHEATING", (int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 10)),
+                 14, col, anchor="center")
 
     def _draw_you(self, surf, rd, b, cam):
         """'YOU' tag with a little arrow over the player's helmet at the start."""
@@ -411,6 +451,7 @@ class RaceScene(Scene):
             bikes = [(rb, boss_key(self.race.boss) if rb is boss_bike else minion_key(self.race.boss), False)
                      for rb in self.race.rivals]
         rd.draw_boss_trail(surf, self.race, cam, self.ticks)
+        rd.draw_hoops(surf, self.track, cam, self.ticks, front=False)
         bikes.append((b, self.livery, True))
         marked = self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS
         # depth by lane; while the start marker shows, the player is drawn on top
@@ -428,15 +469,16 @@ class RaceScene(Scene):
                 rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2, pal)
             outline = self._outline(bk) if me else (self._boss_glow() if bk is boss_bike else None)
             rd.draw_bike(surf, bk, cam, liv, frame, me, outline)
+            rd.draw_bike_fire(surf, bk, cam, self.ticks)
             if bk is boss_bike and bk.state in ("ride", "done"):
                 self._draw_boss_tag(surf, rd, bk, cam)
             if me and (self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS) \
                     and bk.state == "ride":
                 self._draw_you(surf, rd, bk, cam)
-            if me and not self.paused and self.result is None:
-                rd.draw_tilt_arrow(surf, bk, cam, *self.tilt)
-            if not me or self.app.profile.settings.get("heat_gauge", "both") != "bar":
-                rd.draw_heat_arc(surf, bk, cam, self.ticks)
+            rd.draw_heat_arc(surf, bk, cam, self.ticks, always=me)
+            if me:
+                self._draw_overheating(surf, rd, bk, cam)
+        rd.draw_hoops(surf, self.track, cam, self.ticks, front=True)
         rd.draw_boss_aura(surf, self.race, cam, self.ticks)
         if self.race.brain is not None:
             self._draw_blackout(surf, rd, b, cam)
@@ -451,7 +493,7 @@ class RaceScene(Scene):
         if self.target:
             extra.append(self.target.describe())
         hud.race_hud(surf, self.race, W, self.ticks, extra, self.best_lap,
-                     heat_bar=self.app.profile.settings.get("heat_gauge", "both") != "bike")
+)
         if self.replay is not None and (self.ticks // 30) % 2 == 0 and self.result is None:
             hud.text(surf, "REPLAY" + ("  x2" if self.replay_fast else ""), (W // 2, 96), 26,
                      (255, 90, 90), anchor="center")

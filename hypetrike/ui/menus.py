@@ -239,7 +239,7 @@ class TitleScene(BackdropScene):
             hud.text(surf, f"Best lap: {fmt_time(best)}", (W - 10, C.VIEW_H - 10), 16,
                      anchor="bottomright")
         one = self.app.profile.settings.get("throttle_mode") == "one"
-        hint = ("Z hold: heat builds into boost - don't hit the red!  arrows lean/lane" if one
+        hint = ("Z hold: heat builds into boost - overheating is faster, don't blow up!  arrows lean/lane" if one
                 else "Z throttle  X turbo  arrows lean/lane")
         if self.app.input.button_mode:
             hint = ("Mouse: hold to heat, point at a lane - in the air hold to lean forward, let go to lift"
@@ -267,9 +267,9 @@ SETTING_ROWS = [
     ("throttle_mode", "Throttle", [("classic", "Throttle + boost"), ("one", "One button")]),
     ("mouse_steer", "Mouse controls", [("button", "Click to lean fwd"), ("angle", "Aim angle"),
                                        ("hold", "Hold lean"), (False, "Off")]),
-    ("heat_gauge", "Heat gauge", [("both", "Rider + bar"), ("bike", "On rider"), ("bar", "Bottom bar")]),
     ("mouse_wheelie", "Mouse wheelie", [("ramps", "Ramps only"), ("anywhere", "Anywhere")]),
     ("mouse_lanes", "Mouse lanes", [("hover", "Follow cursor"), ("drag", "Drag from home")]),
+    ("air_lane_lock", "Lanes in the air", [(True, "Locked"), (False, "Free")]),
     ("lane_guide", "Mouse lane dots", [(False, "Off"), (True, "On")]),
     ("record_races", "Race recordings", [(True, "On"), (False, "Off")]),
     ("sfx_vol", "Sound effects", SLIDER),

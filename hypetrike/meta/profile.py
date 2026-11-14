@@ -95,7 +95,7 @@ DEFAULTS = {
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
                  "touch_ui": "auto", "mouse_steer": "button", "throttle_mode": "one",
                  "mouse_wheelie": "ramps", "heat_gauge": "both", "lane_guide": False,
-                 "mouse_lanes": "hover", "record_races": True,
+                 "mouse_lanes": "hover", "record_races": True, "air_lane_lock": True,
                  "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 3},
     "tracks": {},
     "best_laps": {},

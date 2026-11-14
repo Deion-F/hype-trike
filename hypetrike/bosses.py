@@ -38,11 +38,11 @@ BOSSES = {
     "stadium": dict(
         name="SHOWSTOPPER", vehicle="dirt", trail="smoke", boost="neon", glow=(255, 215, 60),
         powers=[("Crowd Favourite", "its PERFECTs give it a burst: land PERFECT near it to steal one"),
-                ("Pyro Cannons", "fire jets on marked lanes add heat: dodge them in the red"),
+                ("Pyro Cannons", "fire jets on marked lanes add heat: dodge them while overheating"),
                 ("Smoke trail", "pyro smoke behind it cools your engine")]),
     "lava": dict(
         name="INFERNO", vehicle="sprinter", trail="fire", boost="flame", glow=(255, 90, 30),
-        powers=[("Heat Wave", "your heat climbs near it: pass it cool, never in the red"),
+        powers=[("Heat Wave", "your heat climbs near it: pass it cool, never overheating"),
                 ("Eruption", "lava bursts in your lane: dodge it, or hit it cold for speed"),
                 ("Fire trail", "its trail overheats you fast: never ride behind it")]),
 }

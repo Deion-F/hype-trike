@@ -315,12 +315,34 @@ def test_blow_off_valve_vents_once_per_race_in_both_modes():
 
 def test_supercharger_is_faster_in_the_red():
     def top(ids):
-        b = _bike(ids); b.temp = C.ONE_SUPER_AT + 0.5
+        b = _bike(ids); b.temp = C.TEMP_OVERHEAT - 1.0       # deep in the overheating zone
         for _ in range(200):
-            b.temp = C.ONE_SUPER_AT + 0.5
+            b.temp = C.TEMP_OVERHEAT - 1.0
             b.step(Controls(a=True))
         return b.speed
     assert top(["supercharger"]) >= top([]) + 2
+
+
+def test_overheating_scales_with_depth_and_turns_faster():
+    def top(temp):
+        b = _bike([]); b.temp = temp
+        for _ in range(300):
+            b.temp = temp
+            b.step(Controls(a=True))
+        return b.speed
+    edge, mid, deep = (C.ONE_SUPER_AT + 0.2, (C.ONE_SUPER_AT + C.TEMP_OVERHEAT) / 2, C.TEMP_OVERHEAT - 0.3)
+    boost = top(C.ONE_SUPER_AT - 1)
+    assert boost < top(edge) < top(mid) < top(deep)          # deeper = faster
+    b = _bike([]); b.temp = deep
+    k = b.overheat_depth()
+    assert k > 0.9 and b._accel_interval() < b.stats.accel_interval
+    b.temp = C.ONE_SUPER_AT - 1
+    assert b.overheat_depth() is None and b._accel_interval() == b.stats.accel_interval
+    for temp, faster in ((C.ONE_SUPER_AT - 1, False), (edge, True), (deep, True)):
+        b = _bike([]); b.temp = temp
+        b.airborne, b.h, b.vy, b.angle = True, b.track.ground(b.x) + 100, 3.0, 0.0
+        b.step(Controls(left=True))
+        assert (b.angle > b.stats.pitch_rate * 1.1) == faster, temp
 
 
 def test_pre_heater_restarts_warm_after_a_crash():

@@ -62,6 +62,11 @@ ONE_SUPER_AT = TEMP_OVERHEAT - SUPER_BARS * HEAT_BAR   # = 24 (8 heat, ~1.9 s at
 RED_AT = 27.0               # classic mode's red zone on the gauge (turbo nearly overheating)
 VENT_DROP = 4.0             # Radiator vent (one-button): heat drops to this far below the red
 SUPER_BOOST_EXTRA = 3       # extra top speed over turbo while super-boosting
+# Overheating zone (one-button, heat ONE_SUPER_AT..blow-up) scales with depth:
+OVERHEAT_SPEED_LO = 0.5     # top-speed bonus at the zone's edge, x SUPER_BOOST_EXTRA (+1.5) ...
+OVERHEAT_SPEED_HI = 2.0     # ... rising to this at the very top (+6)
+OVERHEAT_ACCEL = 0.4        # acceleration up to 40% quicker at the top (interval x (1 - this x depth))
+OVERHEAT_TURN = 1.25        # air rotation 25% faster anywhere in the zone
 EXPLODE_EXTRA_TICKS = 100   # explosion lasts this much longer than a normal crash
 EXPLODE_DROP_AT = 0.82      # fraction of the explosion when the new bike touches down
 # Water puddles (any theme but Volcano): a splash that cools the engine and slows you.
@@ -88,8 +93,6 @@ FX_CAM_LEAD = 12            # px the camera runs ahead at full boost
 FX_CAM_LEAD_SUPER = 12      # ... and on top of that at full super boost
 FX_SHAKE = 1.5              # px of horizontal shake at full super boost
 
-# Heat arc worn by the rider (setting "heat_gauge"): centre offset from the
-# bike's ground contact point, and inner radius, in logical px.
 # In-race bike + rider sprites are drawn at this scale, so the rider on the bike
 # matches the thrown / jogging rider after a crash (the garage shows full size).
 SPRITE_SCALE = 0.7
@@ -98,6 +101,9 @@ SPRITE_SCALE = 0.7
 SPRITE_SMOOTH = "native"
 CAM_JUMP_PX = 30            # the bike moving more than this in one frame is a respawn jump ...
 CAM_SCROLL_EASE = 0.88      # ... the camera scrolls over to it (offset kept per frame)
+# Heat gauge: a smooth curved bar worn over the rider's helmet (the only heat
+# gauge): centre offset from the bike's ground contact point, inner radius, px.
+FIRE_FROM = 0.5             # the bike catches fire this far into the red window (0..1)
 HEAT_ARC_DX = round(-3 * SPRITE_SCALE)
 HEAT_ARC_DY = round(-44 * SPRITE_SCALE)
 HEAT_ARC_R = 13
@@ -111,6 +117,10 @@ PRESS_GROW = 0.05           # ... this share of the pitch rate and grows this mu
 RELEASE_GROW = 0.04         # ... button up mid-air: the nose lifts at the drift rate plus this share of
 RELEASE_MAX = 0.8           # ... the pitch rate per tick free, up to this share
 GROUND_ANGLE_LERP = 0.5
+HOOP_R = 15.0               # flaming hoop: pass within this many px of its centre height ...
+HOOP_BOOST = 10             # ... then land clean: this much speed past the cap ...
+HOOP_PERFECT_EXTRA = 5      # ... and this much more for a PERFECT
+HOOP_CHANCE = 0.35          # share of jumps that get a hoop on the generated tracks
 PERFECT_GRACE_PX = 10.0     # lined up for a PERFECT this close above the ground ...
 PERFECT_GRACE_TICKS = 6     # ... still counts for this many ticks (last-moment twitches)
 LAND_PERFECT = 5.0          # |angle error| for a "perfect" landing

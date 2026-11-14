@@ -101,6 +101,7 @@ class Recorder:
             "track": {**to_compact(tr), "meta": {k: v for k, v in tr.meta.items() if k != "segments"},
                       "segments": tr.meta.get("segments")},
             "race": {"stats": asdict(b.stats), "one_button": b.one_button, "livery": livery,
+                     "air_lane_lock": b.air_lane_lock,
                      "rivals": len(race.rivals), "rival_level": race.rival_level, "boss": race.boss,
                      "seed": race.seed, "countdown": race.countdown_start},
             "inputs": [],
@@ -269,6 +270,7 @@ def resimulate(data):
     track, stats, kw, one, _, ctl = rebuild(data)
     race = Race(track, stats, countdown=data["race"].get("countdown", True) != 0, **kw)
     race.bike.one_button = one
+    race.bike.air_lane_lock = data["race"].get("air_lane_lock", True)
     for v in ctl:
         race.step(bits_ctl(v))
     return race

@@ -60,7 +60,7 @@ def _apply(item_id, s, level):
 KIT = {it.id: it for it in (
     KitItem("gyro", "Gyro Bars", "Air", 0.04, "+{v}% rotation speed in the air", 40),
     KitItem("soft_shocks", "Soft Shocks", "Air", 0.04, "+{v}% safe landing angle", 50),
-    KitItem("cool_head", "Cool Head", "Heat", 0.07, "Heat climbs {v}% slower in the red", 40),
+    KitItem("cool_head", "Cool Head", "Heat", 0.07, "Heat climbs {v}% slower while overheating", 40),
     KitItem("radiator", "Radiator", "Heat", 0.06, "Blow-ups and overheat stalls {v}% shorter", 35),
     KitItem("track_boots", "Track Boots", "Recovery", 0.05, "Jog back {v}% faster after a crash", 30),
     KitItem("quick_steer", "Quick Steer", "Handling", 0.08, "Lane changes {v}% faster", 40),

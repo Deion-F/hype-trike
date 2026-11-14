@@ -5,7 +5,7 @@ mechanics.
 
 Built around the two throttle modes (setting "throttle_mode"):
   "one"     (default) heat IS the throttle: warm up, ride the boost band, dip
-            into the red for super boost, never reach the top (it blows up).
+            into overheating for extra speed, never reach the top (it blows up).
   "classic" A = throttle, B = turbo that builds heat toward an overheat stall.
 Each upgrade lists the modes it is offered in; a few read differently per mode
 (name_one / desc_one) because the same stat plays a different role there."""
@@ -73,7 +73,7 @@ _reg(Upgrade("big_bore", "Big Bore", "Engine", "+4% top speed in every heat band
 _reg(Upgrade("quick_shift", "Quick Shift", "Engine", "Accelerate 15% faster",
              desc_one="Speed catches up to your heat 15% faster"),
      _mul("accel_interval", 0.85))
-_reg(Upgrade("supercharger", "Supercharger", "Engine", "+2 top speed in the red (super boost)",
+_reg(Upgrade("supercharger", "Supercharger", "Engine", "More top speed while overheating: +1 at its edge, up to +4 near the top",
              max_stacks=2, modes=ONE),
      _add("super_extra", 2))
 _reg(Upgrade("turbo_tune", "Turbo Tune", "Engine", "Turbo builds 20% less heat",
@@ -90,7 +90,7 @@ _reg(Upgrade("heat_wrap", "Heat Wrap", "Heat",
              max_stacks=2, modes=ONE),
      _mul("cool_coast", 0.65))
 _reg(Upgrade("adrenaline", "Adrenaline", "Heat",
-             "Perfect landings slow red-zone heating by 60% for 2 s: chain them to live in the red",
+             "Perfect landings slow heating by 60% for 2 s while overheating: chain them to stay hot",
              max_stacks=1),
      _add("adrenaline_ticks", 2 * C.FPS))
 _reg(Upgrade("blow_off", "Blow-Off Valve", "Heat",
@@ -164,7 +164,7 @@ _reg(Upgrade("launch_control", "Launch Control", "Engine",
              "Accelerate 30% faster and +4% top speed", max_stacks=1, tier=ELITE,
              desc_one="Speed catches up to your heat 30% faster, and +4% top speed"),
      _both(_mul("accel_interval", 0.7), _mul("max_speed_a", 1.04), _mul("max_speed_b", 1.04)))
-_reg(Upgrade("nitrous", "Nitrous Kit", "Engine", "+5 top speed in the red (super boost)",
+_reg(Upgrade("nitrous", "Nitrous Kit", "Engine", "Much more top speed while overheating: +2.5 at its edge, up to +10 near the top",
              max_stacks=1, modes=ONE, tier=ELITE),
      _add("super_extra", 5))
 _reg(Upgrade("ceramic", "Ceramic Coating", "Heat", "Turbo builds 40% less heat", max_stacks=1, tier=ELITE,

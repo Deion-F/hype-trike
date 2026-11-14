@@ -529,6 +529,8 @@ class InputManager:
             if not hover:
                 self.mouse_lane = None
             self._reset_air()
+        if self._air_lane_locked(bike):
+            return c
         if hover:
             self._update_hover_lane(bike)
         if bike is not None and self.mouse_lane is not None and (hover or self.mouse_driving):
@@ -540,6 +542,16 @@ class InputManager:
                 c.lane_down = True
         return c
 
+    def _air_lane_locked(self, bike):
+        """Setting "Lanes in the air: Locked": while airborne the mouse's lane aim is
+        pinned to the bike's lane and cursor movement is used up, so you land in
+        the lane you took off in and nothing changes lane the moment you touch down."""
+        if bike is None or not bike.airborne or not self.settings.get("air_lane_lock", True):
+            return False
+        self.mouse_lane = bike.lane
+        self._hover_seen = self.mouse_pos
+        return True
+
     def _button_controls(self, c, bike):
         """Mouse "button" scheme (see button_air.py): no anchor, no mouse lean."""
         m = pygame.mouse.get_pressed()
@@ -550,6 +562,8 @@ class InputManager:
         self.mouse_lean = 0
         self.lean_locked = False
         self._reset_air()
+        if self._air_lane_locked(bike):
+            return c
         if self.hover_lanes and bike is not None:
             self._update_hover_lane(bike)
             if self.mouse_lane < bike.lane:
