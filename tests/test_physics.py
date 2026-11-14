@@ -290,6 +290,17 @@ def test_one_button_rough_landing_dumps_heat():
     assert b.temp == 20.0
 
 
+def test_nose_low_landings_have_a_rough_band_slightly_smaller_than_nose_high():
+    assert C.LAND_TOLERANCE < C.LAND_ROUGH_NOSE < C.LAND_ROUGH
+    for angle in (-(C.LAND_TOLERANCE + 1), -C.LAND_ROUGH_NOSE):      # nose-low: rough, not a crash
+        b, ev = _land_at(True, angle=angle)
+        assert ("rough",) in ev and b.state != "crash"
+    b, ev = _land_at(True, angle=-(C.LAND_ROUGH_NOSE + 1))           # past the band: crash
+    assert b.state == "crash"
+    b, ev = _land_at(True, angle=C.LAND_ROUGH_NOSE + 1)              # the same error nose-high is rough
+    assert ("rough",) in ev
+
+
 def test_backdrop_scrolls_left_as_the_rider_moves_forward():
     import pygame
     if not pygame.display.get_init():
@@ -366,7 +377,7 @@ def test_tilt_arrow_draws_ahead_of_the_nose_and_grows_with_strength():
         rd.draw_tilt_arrow(s, b, b.x, direction, level, mx)
         sx, _ = rd.bike_screen_pos(b, b.x)
         n = pygame.mask.from_threshold(s, (0, 0, 0), (1, 1, 1, 255)).count()
-        ahead = pygame.mask.from_threshold(s.subsurface((int(sx) + 20, 0, 40, 360)), (0, 0, 0),
+        ahead = pygame.mask.from_threshold(s.subsurface((int(sx + 20 * C.SPRITE_SCALE), 0, 40, 360)), (0, 0, 0),
                                            (1, 1, 1, 255)).count()
         return 640 * 360 - n, 40 * 360 - ahead
     assert lit(0, 0, 1)[0] == 0                       # no lean, nothing drawn
@@ -424,8 +435,11 @@ def test_volcano_heats_faster_and_cools_slower():
 def test_perfect_aligned_tracks_the_landing_slope():
     b = Bike(flat(60)); b.speed = 40
     b.airborne = True; b.air_ticks = 20; b.h = 60; b.vy = 1.0
+    t, _ = b.predicted_landing()
     b.angle = 0.0
-    assert b.perfect_aligned()                         # flat landing, level nose
+    assert not b.perfect_aligned()                     # level now, but the nose drops before touchdown
+    b.angle = b.stats.nose_drop * t
+    assert b.perfect_aligned()                         # lands level if you let go now
     b.angle = 25.0
     assert not b.perfect_aligned()
     b.airborne = False
@@ -434,7 +448,7 @@ def test_perfect_aligned_tracks_the_landing_slope():
 
 def test_run_final_heat_is_the_volcano():
     from run.manager import RunState, RUN_HEATS
-    r = RunState(seed=3, themes=["valley", "desert"])
+    r = RunState(seed=3)
     r.heat_i = RUN_HEATS - 1
     assert r.prepare_heat().track.theme == C.LAVA_THEME
     r.heat_i = 0
@@ -450,3 +464,93 @@ def test_outline_pads_the_sprite_evenly():
     out = art.outlined(img, (255, 205, 50), 2)
     assert out.get_size() == (img.get_width() + 4, img.get_height() + 4)
     assert pygame.mask.from_surface(out).count() > pygame.mask.from_surface(img).count()
+
+
+def test_heat_never_rises_in_the_air():
+    for one in (True, False):
+        for ctl in (Controls(a=True), Controls(a=True, b=True)):
+            b = Bike(flat(100))
+            b.one_button = one
+            b.temp, b.speed = 12.0, 40
+            b.airborne, b.air_ticks, b.h, b.vy = True, 1, b.track.ground(b.x) + 200, 4.0
+            for _ in range(30):
+                b.step(ctl)
+                assert b.airborne and b.temp <= 12.0
+    b = Bike(flat(100))                                  # letting go in the air still cools
+    b.one_button = True
+    b.temp, b.speed = 12.0, 40
+    b.airborne, b.air_ticks, b.h, b.vy = True, 1, b.track.ground(b.x) + 200, 4.0
+    for _ in range(10):
+        b.step(Controls())
+    assert b.temp < 12.0
+
+
+def _crash_at(track, x, lane=1):
+    """Crash a bike at x and run it through recovery; returns it."""
+    b = Bike(track, lane=lane, x=x)
+    b._crash([], "nose")
+    run(b, Controls(), b.crash_total + 1)
+    assert b.state == "ride"
+    return b
+
+
+def test_respawn_skips_a_pit_just_ahead():
+    t = make_track("S" + "." * 5 + "sgg" + "." * 20, laps=1)
+    b = _crash_at(t, 4 * C.TILE_W + 40)          # two tiles short of the ramp
+    assert b.x >= 9 * C.TILE_W                   # past the ramp and the pit
+
+
+def test_respawn_skips_a_barrier_just_ahead():
+    t = make_track("S" + "." * 30, laps=1)
+    apply_layer(t, 1, "." * 7 + "d")
+    b = _crash_at(t, 5 * C.TILE_W + 40)
+    assert int(b.x // C.TILE_W) == 8
+
+
+def test_respawn_stays_put_with_a_clear_run_up():
+    t = make_track("S" + "." * 12 + "g" + "." * 20, laps=1)
+    b = _crash_at(t, 4 * C.TILE_W + 10)
+    assert b.x < 7 * C.TILE_W                    # only the tumble moved it
+
+
+
+def test_perfect_grace_forgives_a_last_moment_twitch():
+    for twitch, perfect in ((0.0, True), (C.LAND_PERFECT + 3, True), (C.LAND_TOLERANCE + 1, False)):
+        b = Bike(flat(60)); b.speed = 40
+        b.airborne = True; b.air_ticks = 30; b.h = b.track.ground(b.x) + 6; b.vy = -1.0; b.angle = 0.0
+        b.step(Controls())                             # lined up just above the ground ...
+        b.angle = -twitch                              # ... then a last-moment twitch
+        ev = []
+        for _ in range(10):
+            ev += b.step(Controls())
+            if not b.airborne:
+                break
+        assert (("perfect",) in ev) == perfect, twitch
+
+
+def test_heat_does_not_rise_up_a_ramp():
+    from track.tiles import make_track
+    tr = make_track("S..L......", laps=1)
+    b = Bike(tr); b.one_button = True
+    b.x = 3 * C.TILE_W + 20; b.h = tr.ground(b.x); b.speed = 30; b.temp = 15.0
+    assert b.climbing()
+    b.step(Controls(a=True))
+    assert b.temp <= 15.0
+    b.x = 6 * C.TILE_W; b.h = tr.ground(b.x); b.airborne = False
+    b.step(Controls(a=True))
+    assert b.temp > 15.0                               # on the flat it heats again
+
+
+def test_lap_clock_stops_at_the_finish():
+    from race import Race
+    from track.tiles import make_track
+    race = Race(make_track("S" + "." * 8, laps=1), rivals=1, rival_level=0.0, countdown=False)
+    race.bike.speed = 46
+    while not race.finished:
+        race.bike.speed = 46
+        race.step(Controls(a=True))
+    stop = race.clock
+    for _ in range(120):
+        race.step(Controls())
+    assert race.clock == stop and race.time_ticks > stop
+    assert race.position() == 1                         # rivals finishing later stay behind

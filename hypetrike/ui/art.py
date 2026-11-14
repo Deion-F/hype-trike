@@ -16,6 +16,202 @@ LIVERIES = {
 }
 RIVAL_LIVERIES = ["ocean", "lime", "violet", "gold"]
 
+
+def livery_key(bike, rider=None):
+    """Sprite key for a bike paint plus a rider kit (mix and match): "ocean"
+    when they match, "ocean+gold" when the rider wears a different scheme."""
+    bike = bike if bike in LIVERIES else "flame"
+    rider = rider if rider in LIVERIES else bike
+    return bike if rider == bike else f"{bike}+{rider}"
+
+
+def livery(key):
+    """Colours for a livery key (see livery_key): the bike's body/dark from the
+    bike paint, the rider's suit/helmet/stripe from the rider scheme."""
+    if str(key).startswith("boss:"):
+        return dict(BOSS_LIVERIES.get(str(key)[5:], LIVERIES["flame"]))
+    if str(key).startswith("minion:"):
+        return _minion_livery(str(key)[7:])
+    bike, _, rider = str(key).partition("+")
+    base = dict(LIVERIES.get(bike, LIVERIES["flame"]))
+    if rider in LIVERIES:
+        r = LIVERIES[rider]
+        base.update(suit=r["suit"], helmet=r["helmet"], accent=r["body"])
+    return base
+
+
+# --- biome bosses: themed paint + epic extras drawn over the normal bike ----------------
+BOSS_LIVERIES = {
+    "valley": dict(name="Mud Baron", body=(104, 116, 52), dark=(72, 54, 32), suit=(92, 72, 46),
+                   helmet=(66, 74, 40), accent=(214, 196, 130)),
+    "desert": dict(name="Dune Raider", body=(222, 182, 112), dark=(150, 90, 40), suit=(204, 164, 104),
+                   helmet=(236, 214, 172), accent=(210, 40, 40)),
+    "night": dict(name="Phantom", body=(40, 30, 70), dark=(150, 70, 255), suit=(24, 20, 40),
+                  helmet=(236, 236, 246), accent=(170, 90, 255)),
+    "stadium": dict(name="Showstopper", body=(250, 250, 250), dark=(230, 180, 30), suit=(200, 30, 40),
+                    helmet=(255, 215, 60), accent=(255, 215, 60)),
+    "lava": dict(name="Inferno", body=(44, 22, 22), dark=(210, 40, 20), suit=(30, 24, 28),
+                 helmet=(22, 16, 20), accent=(255, 120, 30)),
+}
+RIDER_LEAN = {"sprinter": 2, "trike": -1}
+
+
+def boss_key(biome):
+    return f"boss:{biome}"
+
+
+def minion_key(biome):
+    return f"minion:{biome}"
+
+
+def _minion_livery(biome):
+    """A boss's colours, a shade darker: its minions read as its crew."""
+    base = dict(BOSS_LIVERIES.get(biome, LIVERIES["flame"]))
+    for k in ("body", "suit", "helmet"):
+        base[k] = tuple(int(c * 0.82) for c in base[k])
+    return base
+
+
+def _minion_extras(s, biome, vehicle, frame):
+    """One small piece of the boss's look, so minions read as its crew."""
+    bob = frame
+    lean = RIDER_LEAN.get(vehicle, 0)
+    hx, hy = 29 + lean, 7 + bob
+    if biome == "lava":                                   # stubby horns
+        for side in (-1, 1):
+            pygame.draw.polygon(s, (24, 18, 20), [(hx + side * 3, hy - 3), (hx + side * 5, hy - 7),
+                                                   (hx + side * 2, hy - 4)])
+    elif biome == "valley":                               # bone face guard
+        pygame.draw.line(s, (230, 222, 196), (hx + 1, hy + 2), (hx + 5, hy + 2), 2)
+    elif biome == "desert":                               # goggles
+        pygame.draw.rect(s, (255, 150, 30), (hx, hy - 2, 5, 2))
+    elif biome == "night":                                # glowing eyes
+        pygame.draw.rect(s, (200, 140, 255), (hx + 1, hy, 1, 1))
+        pygame.draw.rect(s, (200, 140, 255), (hx + 3, hy, 1, 1))
+    elif biome == "stadium":                              # a star on the tank
+        x, y = 26, 21 + bob
+        pygame.draw.polygon(s, (255, 215, 60), [(x, y - 2), (x + 2, y + 2), (x - 2, y + 2)])
+
+
+def draw_minion(vehicle, biome, frame, rider=True):
+    out = DRAWERS.get(vehicle, draw_dirt_bike)(_minion_livery(biome), frame, rider)
+    if rider:
+        _minion_extras(out, biome, vehicle, frame)
+    return out
+
+
+def _boss_extras(s, biome, vehicle, frame):
+    """Draw a boss's extras on a finished 52x54 sprite (native coordinates)."""
+    bob = frame
+    lean = RIDER_LEAN.get(vehicle, 0)
+    hx, hy = 29 + lean, 7 + bob                    # helmet centre
+    sx, sy = 26 + lean, 12 + bob                   # shoulder
+    if biome == "lava":                            # INFERNO: horns, red visor, flame decals
+        for side in (-1, 1):
+            base = (hx + side * 3, hy - 3)
+            pygame.draw.polygon(s, (24, 18, 20), [base, (hx + side * 7, hy - 9), (hx + side * 2, hy - 4)])
+            pygame.draw.line(s, (255, 90, 30), (hx + side * 6, hy - 8), (hx + side * 7, hy - 10), 1)
+        pygame.draw.rect(s, (255, 60, 20), (hx + 1, hy - 1, 5, 2))
+        for i, (x, y) in enumerate(((24, 22), (28, 21), (32, 20), (14, 24))):
+            col = (255, 200, 60) if (i + frame) % 2 else (255, 110, 30)
+            pygame.draw.polygon(s, col, [(x, y + bob + 2), (x + 2, y + bob - 3), (x + 4, y + bob + 2)])
+    elif biome == "valley":                        # MUD BARON: spiked pauldron, bone mask, mud splats
+        pygame.draw.circle(s, (70, 52, 32), (sx, sy), 4)
+        for dx, dy in ((-3, -4), (0, -5), (3, -4)):
+            pygame.draw.line(s, (200, 196, 180), (sx + dx // 2, sy - 2), (sx + dx, sy + dy), 1)
+        pygame.draw.line(s, (230, 222, 196), (hx + 1, hy + 2), (hx + 5, hy + 2), 2)
+        for x, y in ((8, 26), (18, 30), (34, 28), (44, 38), (10, 40)):
+            pygame.draw.circle(s, (96, 70, 40), (x, y + bob), 1)
+    elif biome == "desert":                        # DUNE RAIDER: trailing scarf, goggles, sun emblem
+        wave = 1 if frame else -1
+        pts = [(sx - 1, sy + 1), (sx - 7, sy + 2 + wave), (sx - 13, sy + wave * -1), (sx - 18, sy + 2)]
+        pygame.draw.lines(s, (210, 40, 40), False, pts, 2)
+        pygame.draw.rect(s, (255, 150, 30), (hx, hy - 2, 5, 2))
+        pygame.draw.circle(s, (255, 210, 80), (29, 22 + bob), 2)
+    elif biome == "night":                         # PHANTOM: hooded cloak, glowing eyes, neon trims
+        pygame.draw.polygon(s, (30, 22, 50), [(hx - 5, hy - 4), (hx + 2, hy - 7), (hx + 4, hy - 2),
+                                              (sx - 2, sy + 6), (sx - 14, sy + 8 + bob), (sx - 8, sy + 2)])
+        pygame.draw.rect(s, (200, 140, 255), (hx + 1, hy, 1, 1))
+        pygame.draw.rect(s, (200, 140, 255), (hx + 3, hy, 1, 1))
+        pygame.draw.line(s, (170, 90, 255), (8, 22 + bob), (30, 25 + bob), 1)
+    elif biome == "stadium":                       # SHOWSTOPPER: crown, cape, star decals
+        pygame.draw.polygon(s, (255, 215, 60), [(hx - 4, hy - 4), (hx - 4, hy - 8), (hx - 2, hy - 6),
+                                                 (hx, hy - 9), (hx + 2, hy - 6), (hx + 4, hy - 8), (hx + 4, hy - 4)])
+        cape = [(sx - 1, sy - 1), (sx - 12, sy + 3 + bob), (sx - 15, sy + 9 - bob), (sx - 3, sy + 6)]
+        pygame.draw.polygon(s, (190, 20, 40), cape)
+        for x, y in ((26, 21), (12, 24)):
+            pygame.draw.polygon(s, (255, 215, 60), [(x, y - 2 + bob), (x + 1, y + bob), (x + 3, y + bob),
+                                                     (x + 1, y + 1 + bob), (x + 2, y + 3 + bob),
+                                                     (x, y + 2 + bob), (x - 2, y + 3 + bob), (x - 1, y + 1 + bob),
+                                                     (x - 3, y + bob), (x - 1, y + bob)])
+
+
+def draw_boss(vehicle, biome, frame, rider=True):
+    out = DRAWERS.get(vehicle, draw_dirt_bike)(livery(boss_key(biome)), frame, rider)
+    if rider:
+        _boss_extras(out, biome, vehicle, frame)
+    return out
+
+
+livery_colors = livery          # alias used by the sprite cache
+
+
+def bike_paint(key):
+    return str(key).partition("+")[0]
+
+
+# --- boost colours: the exhaust heat flame, boost sparks and speed streaks ----------------
+# Per stage (cold / boost / red window): (outer, mid, core) at the start and end of
+# the stage. The red window stays the most intense and flickers in every scheme.
+BOOSTS = {
+    "flame": dict(name="Flame",
+                  cold=(((255, 215, 70), (255, 240, 150), (255, 255, 235)),
+                        ((255, 185, 50), (255, 230, 120), (255, 255, 230))),
+                  boost=(((255, 130, 25), (255, 205, 70), (255, 250, 210)),
+                         ((240, 70, 20), (255, 150, 40), (255, 225, 160))),
+                  red=(((200, 15, 15),) * 3, ((200, 15, 15), (255, 60, 30), (255, 170, 120))),
+                  sparks=((255, 200, 70), (255, 130, 40)), streak=((255, 70, 35), (255, 150, 50))),
+    "plasma": dict(name="Plasma",
+                   cold=(((150, 220, 255), (200, 240, 255), (245, 252, 255)),
+                         ((110, 200, 255), (180, 230, 255), (240, 250, 255))),
+                   boost=(((40, 150, 255), (110, 200, 255), (225, 245, 255)),
+                          ((30, 90, 240), (80, 170, 255), (200, 235, 255))),
+                   red=(((150, 40, 230),) * 3, ((150, 40, 230), (200, 90, 255), (240, 200, 255))),
+                   sparks=((140, 220, 255), (60, 140, 255)), streak=((170, 80, 255), (90, 180, 255))),
+    "toxic": dict(name="Toxic",
+                  cold=(((200, 245, 120), (225, 255, 170), (245, 255, 225)),
+                        ((170, 240, 90), (210, 255, 140), (240, 255, 215))),
+                  boost=(((110, 220, 40), (180, 250, 90), (235, 255, 200)),
+                         ((60, 190, 30), (140, 235, 70), (220, 255, 170))),
+                  red=(((40, 120, 20),) * 3, ((40, 120, 20), (200, 230, 30), (250, 255, 160))),
+                  sparks=((190, 255, 90), (90, 210, 40)), streak=((220, 240, 40), (120, 230, 60))),
+    "neon": dict(name="Neon",
+                 cold=(((255, 170, 230), (255, 205, 240), (255, 240, 250)),
+                       ((255, 130, 215), (255, 185, 235), (255, 235, 250))),
+                 boost=(((255, 70, 190), (255, 150, 220), (255, 230, 245)),
+                        ((230, 30, 160), (255, 100, 200), (255, 210, 240))),
+                 red=(((160, 20, 200),) * 3, ((160, 20, 200), (255, 40, 150), (255, 190, 230))),
+                 sparks=((255, 150, 230), (230, 60, 190)), streak=((255, 40, 170), (200, 90, 255))),
+    "gold": dict(name="Gold",
+                 cold=(((255, 240, 150), (255, 248, 200), (255, 255, 240)),
+                       ((255, 225, 110), (255, 240, 170), (255, 255, 235))),
+                 boost=(((255, 200, 40), (255, 230, 110), (255, 252, 220)),
+                        ((240, 170, 20), (255, 215, 70), (255, 245, 190))),
+                 red=(((210, 120, 10),) * 3, ((210, 120, 10), (255, 190, 30), (255, 250, 200))),
+                 sparks=((255, 230, 110), (255, 190, 40)), streak=((255, 180, 30), (255, 240, 140))),
+    "ghost": dict(name="Ghost",
+                  cold=(((215, 225, 240), (235, 240, 250), (255, 255, 255)),
+                        ((195, 210, 235), (225, 232, 248), (255, 255, 255))),
+                  boost=(((170, 190, 230), (215, 225, 250), (255, 255, 255)),
+                         ((140, 160, 220), (195, 210, 245), (250, 252, 255))),
+                  red=(((90, 100, 150),) * 3, ((90, 100, 150), (190, 200, 240), (255, 255, 255))),
+                  sparks=((230, 236, 255), (170, 185, 230)), streak=((200, 210, 255), (255, 255, 255))),
+}
+
+
+def boost_palette(name):
+    return BOOSTS.get(name, BOOSTS["flame"])
+
 TIRE = (34, 30, 40)
 RIM = (170, 170, 182)
 METAL = (120, 124, 140)
@@ -114,7 +310,7 @@ def _rider(s, liv, bob, hip, hand, lean=0):
     # torso leaning forward
     sh = (hx + 6 + lean, hy - 10)
     pygame.draw.line(s, suit, (hx, hy), sh, 5)
-    pygame.draw.line(s, liv["body"], (hx + 1, hy - 3), (sh[0], sh[1] + 2), 2)  # jersey stripe
+    pygame.draw.line(s, liv.get("accent", liv["body"]), (hx + 1, hy - 3), (sh[0], sh[1] + 2), 2)  # jersey stripe
     # arm to bars
     pygame.draw.line(s, suit, sh, (hand[0], hand[1] + bob), 3)
     pygame.draw.rect(s, BOOT, (hand[0] - 1, hand[1] + bob - 1, 3, 3))
@@ -122,7 +318,7 @@ def _rider(s, liv, bob, hip, hand, lean=0):
     hc = (sh[0] + 3, sh[1] - 5)
     pygame.draw.circle(s, liv["helmet"], hc, 5)
     pygame.draw.rect(s, VISOR, (hc[0] + 1, hc[1] - 1, 5, 3))
-    pygame.draw.line(s, liv["body"], (hc[0] - 4, hc[1] - 2), (hc[0] + 2, hc[1] - 5), 2)
+    pygame.draw.line(s, liv.get("accent", liv["body"]), (hc[0] - 4, hc[1] - 2), (hc[0] + 2, hc[1] - 5), 2)
 
 
 def _bars(s, dark, fy):
@@ -340,17 +536,126 @@ def draw_rider_run(liv, t):
     return s
 
 
+# --- drawing sprites at a smaller size, natively (no resampling blur) --------------------
+class _ScaledSurface:
+    """A sprite canvas whose coordinates are in the art's native grid; the pixels
+    underneath are `k` times the size. Only what the drawers use is supported."""
+
+    def __init__(self, size, flags, k):
+        self.k = k
+        self.real = _real_pygame.Surface((max(1, round(size[0] * k)), max(1, round(size[1] * k))), flags)
+
+    def fill(self, color, rect=None):
+        if rect is None:
+            return self.real.fill(color)
+        x, y, w, h = rect
+        k = self.k
+        return self.real.fill(color, (round(x * k), round(y * k), max(1, round(w * k)), max(1, round(h * k))))
+
+    def blit(self, other, pos):
+        src = other.real if isinstance(other, _ScaledSurface) else other
+        return self.real.blit(src, (round(pos[0] * self.k), round(pos[1] * self.k)))
+
+
+class _ScaledDraw:
+    """pygame.draw with every coordinate, radius and line width scaled by k and
+    rounded to whole pixels, so shapes land crisp on the smaller canvas."""
+
+    def __init__(self, k):
+        self.k = k
+
+    def _p(self, pt):
+        return (round(pt[0] * self.k), round(pt[1] * self.k))
+
+    def _w(self, w):
+        return max(1, round(w * self.k)) if w else 0
+
+    def line(self, s, col, a, b, width=1):
+        return _real_pygame.draw.line(s.real, col, self._p(a), self._p(b), self._w(width))
+
+    def lines(self, s, col, closed, pts, width=1):
+        return _real_pygame.draw.lines(s.real, col, closed, [self._p(p) for p in pts], self._w(width))
+
+    def polygon(self, s, col, pts, width=0):
+        return _real_pygame.draw.polygon(s.real, col, [self._p(p) for p in pts], self._w(width))
+
+    def circle(self, s, col, c, r, width=0):
+        return _real_pygame.draw.circle(s.real, col, self._p(c), max(1, round(r * self.k)), self._w(width))
+
+    def _rect(self, r):
+        x, y, w, h = r
+        return (round(x * self.k), round(y * self.k), max(1, round(w * self.k)), max(1, round(h * self.k)))
+
+    def rect(self, s, col, r, width=0, border_radius=0):
+        return _real_pygame.draw.rect(s.real, col, self._rect(r), self._w(width),
+                                      border_radius=round(border_radius * self.k))
+
+    def ellipse(self, s, col, r, width=0):
+        return _real_pygame.draw.ellipse(s.real, col, self._rect(r), self._w(width))
+
+    def arc(self, s, col, r, a0, a1, width=1):
+        return _real_pygame.draw.arc(s.real, col, self._rect(r), a0, a1, self._w(width))
+
+
+class _ScaledPygame:
+    """Stands in for the pygame module inside this file while a sprite is drawn."""
+
+    def __init__(self, k):
+        self.k = k
+        self.draw = _ScaledDraw(k)
+
+    def Surface(self, size, flags=0):        # noqa: N802 (mirrors pygame.Surface)
+        return _ScaledSurface(size, flags, self.k)
+
+    def __getattr__(self, name):
+        return getattr(_real_pygame, name)
+
+
+_real_pygame = pygame
+
+
+def draw_scaled(drawer, k, *args, **kw):
+    """Run a sprite drawer with everything scaled by k: crisp, not resampled."""
+    global pygame
+    if k == 1.0:
+        return drawer(*args, **kw)
+    pygame = _ScaledPygame(k)
+    try:
+        out = drawer(*args, **kw)
+    finally:
+        pygame = _real_pygame
+    return out.real if isinstance(out, _ScaledSurface) else out
+
+
 class SpriteCache:
     """Pre-rendered vehicle frames + a rotation cache (rotation is slow-ish)."""
 
-    def __init__(self):
+    def __init__(self, scale=1.0, smooth=True):
+        """scale: drawn size (the race renderer uses config.SPRITE_SCALE); the
+        sprite's contact point scales with it (see blit_rotated)."""
+        self.scale = scale
+        self.smooth = smooth
         self._base = {}
         self._rot = {}
 
     def vehicle(self, vehicle, livery, frame, rider=True):
         key = (vehicle, livery, frame, rider)
         if key not in self._base:
-            self._base[key] = DRAWERS.get(vehicle, draw_dirt_bike)(LIVERIES[livery], frame, rider)
+            drawer = DRAWERS.get(vehicle, draw_dirt_bike)
+            if str(livery).startswith("boss:"):
+                biome = str(livery)[5:]
+                drawer = lambda liv, f, r, _v=vehicle, _b=biome: draw_boss(_v, _b, f, r)   # noqa: E731
+            elif str(livery).startswith("minion:"):
+                biome = str(livery)[7:]
+                drawer = lambda liv, f, r, _v=vehicle, _b=biome: draw_minion(_v, _b, f, r)   # noqa: E731
+            if self.scale != 1.0 and self.smooth == "native":
+                img = draw_scaled(drawer, self.scale, livery_colors(livery), frame, rider)
+            else:
+                img = drawer(livery_colors(livery), frame, rider)
+                if self.scale != 1.0:
+                    size = (round(SPR_W * self.scale), round(SPR_H * self.scale))
+                    img = (pygame.transform.smoothscale if self.smooth else pygame.transform.scale)(img, size)
+            self._base[key] = img
         return self._base[key]
 
     def rotated(self, vehicle, livery, frame, angle, rider=True):
@@ -387,10 +692,11 @@ def outlined(img, color, width=1):
     return out
 
 
-def blit_rotated(dst, img_rot, angle_deg, contact_screen):
-    """Blit a rotated sprite so that the CONTACT point lands on contact_screen."""
-    ox = CONTACT[0] - SPR_W / 2
-    oy = CONTACT[1] - SPR_H / 2
+def blit_rotated(dst, img_rot, angle_deg, contact_screen, scale=1.0):
+    """Blit a rotated sprite so that the CONTACT point lands on contact_screen.
+    scale: the size the sprite was drawn at (SpriteCache.scale)."""
+    ox = (CONTACT[0] - SPR_W / 2) * scale
+    oy = (CONTACT[1] - SPR_H / 2) * scale
     a = math.radians(angle_deg)
     rx = ox * math.cos(a) + oy * math.sin(a)
     ry = -ox * math.sin(a) + oy * math.cos(a)

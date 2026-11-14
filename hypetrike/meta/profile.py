@@ -83,18 +83,20 @@ DEFAULTS = {
     "lifetime_currency": 0,
     "runs": 0,
     "wins": 0,
-    "best_heat": 0,
+    "best_heat": 0,          # most races cleared in one run
+    "best_biome": 0,         # most biomes cleared in one run
     "vehicles": ["dirt"],
     "liveries": ["flame"],
-    "themes": ["valley"],
-    "start_upgrades": [],
-    "selected": {"vehicle": "dirt", "livery": "flame", "start_upgrade": None},
+    "kit_levels": {},        # Starter Kit: {item id: level 0..5}
+    "bike_levels": {},       # bike tuning, per vehicle: {vehicle: {stat: level 0..5}}
+    "boosts": ["flame"],      # boost colour schemes owned
+    "selected": {"vehicle": "dirt", "livery": "flame", "rider": "flame", "boost": "flame"},
     "settings": {"sound": True, "music": True, "smooth": False,
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
-                 "touch_ui": "auto", "mouse_steer": "angle", "throttle_mode": "one",
+                 "touch_ui": "auto", "mouse_steer": "button", "throttle_mode": "one",
                  "mouse_wheelie": "ramps", "heat_gauge": "both", "lane_guide": False,
                  "mouse_lanes": "hover", "record_races": True,
-                 "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 2},
+                 "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 3},
     "tracks": {},
     "best_laps": {},
 }
@@ -122,7 +124,24 @@ class Profile:
         saved_st = (data or {}).get("settings") or {}
         if saved_st and saved_st.get("settings_v", 1) < 2:
             st["throttle_mode"] = "one"
-        st["settings_v"] = 2
+        # v3: the "button" mouse scheme became the default; move the old default over once.
+        if saved_st and saved_st.get("settings_v", 1) < 3 and st.get("mouse_steer") == "angle":
+            st["mouse_steer"] = "button"
+        st["settings_v"] = 3
+        # Theme packs are no longer sold (a run tours every biome): refund once.
+        old = d.pop("themes", None) or []
+        d.pop("theme_rotation", None)
+        if old and not d.get("themes_refunded"):
+            from meta.shop import OLD_THEME_PRICES
+            d["currency"] += sum(OLD_THEME_PRICES.get(t, 0) for t in set(old))
+        d["themes_refunded"] = True
+        # The one-off starting upgrades became the levelled Starter Kit: refund once.
+        old_kits = d.pop("start_upgrades", None) or []
+        d["selected"].pop("start_upgrade", None)
+        if old_kits and not d.get("kits_refunded"):
+            from meta.shop import OLD_KIT_PRICES
+            d["currency"] += sum(OLD_KIT_PRICES.get(k, 0) for k in set(old_kits))
+        d["kits_refunded"] = True
         self.data = d
 
     # convenience accessors
@@ -162,6 +181,23 @@ class Profile:
             return False
         self.data["currency"] -= amount
         return True
+
+    def player_livery(self):
+        """Sprite key for the chosen bike paint + rider colours (ui.art.livery_key)."""
+        from ui.art import livery_key
+        sel = self.data["selected"]
+        return livery_key(sel.get("livery", "flame"), sel.get("rider"))
+
+    def bike_levels(self, vehicle=None):
+        vehicle = vehicle or self.data["selected"]["vehicle"]
+        return self.data.setdefault("bike_levels", {}).setdefault(vehicle, {})
+
+    def player_stats(self, vehicle=None):
+        """The chosen vehicle at the player's tuning levels (no run upgrades)."""
+        from bike import base_stats
+        from meta.bike_tune import apply_tune
+        vehicle = vehicle or self.data["selected"]["vehicle"]
+        return apply_tune(base_stats(vehicle), self.bike_levels(vehicle))
 
     def owns(self, kind, item):
         return item in self.data[kind]

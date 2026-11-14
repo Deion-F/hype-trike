@@ -1,15 +1,24 @@
-"""Garage: meta-shop + loadout (vehicle, livery, starting kit, theme rotation)."""
+"""Garage: meta-shop + loadout (vehicle, livery) and the levelled Starter Kit. Biomes aren't
+bought: a run tours them all, easiest to hardest (run.manager.BIOMES)."""
 import pygame
 
 import config as C
 from bike import base_stats
 from meta import shop
+from bike import VEHICLES
+from meta.bike_tune import TUNE, price as tune_price
+from meta.kit import KIT, MAX_LEVEL
+from ui.art import livery_key
+from run.upgrades import CATEGORY_COLORS
 from track.tiles import DIRT, GRASS, SAND
 from ui import hud, art
 from ui.menus import BackdropScene, button
 from ui.input import TAP_SLOP  # noqa: F401
 
-TABS = [("vehicle", "VEHICLES"), ("livery", "PAINT"), ("kit", "START KIT"), ("theme", "THEMES")]
+TABS = [("vehicle", "VEHICLES"), ("tune", "TUNE"), ("livery", "BIKE"), ("rider", "RIDER"),
+        ("boost", "BOOST"), ("kit", "STARTER KIT")]
+LEVELLED = ("kit", "tune")      # tabs of items bought level by level
+TUNE_CAT = {"top_speed": "Engine", "accel": "Engine", "cooling": "Heat", "air": "Air", "landing": "Air"}
 
 
 class GarageScene(BackdropScene):
@@ -28,27 +37,49 @@ class GarageScene(BackdropScene):
         return TABS[self.tab][0]
 
     def items(self):
+        if self.kind == "tune":
+            return [{"id": t.id, "name": t.name, "category": TUNE_CAT[t.id]} for t in TUNE.values()]
         return shop.catalogue(self.kind, self.app.profile.settings.get("throttle_mode", "one"))
 
+    # levelled items (Starter Kit, bike tuning)
+    def _level(self, item_id):
+        if self.kind == "tune":
+            return self.app.profile.bike_levels().get(item_id, 0)
+        return shop.kit_level(self.app.profile, item_id)
+
+    def _price(self, item_id):
+        if self.kind == "tune":
+            return tune_price(self.app.profile.selected["vehicle"], item_id, self._level(item_id))
+        return KIT[item_id].price(self._level(item_id))
+
+    def _describe(self, item_id, level):
+        return (TUNE if self.kind == "tune" else KIT)[item_id].describe(level)
+
     def _focus_selected(self):
+        if self.kind in LEVELLED:
+            self.sel = min(getattr(self, "sel", 0), len(self.items()) - 1)
+            return
         for i, it in enumerate(self.items()):
-            if shop.is_selected(self.app.profile, self.kind, it["id"]) and self.kind != "theme":
+            if shop.is_selected(self.app.profile, self.kind, it["id"]):
                 self.sel = i
                 return
         self.sel = 0
 
     def owned(self, item_id):
+        if self.kind in LEVELLED:
+            return self._level(item_id) > 0
         return item_id in self.app.profile.data[shop.KIND_KEY[self.kind]]
 
     # -- layout --------------------------------------------------------------
     def _tab_rects(self):
         W = self.app.view.width
-        tw = 110
+        tw = 98
         x0 = W // 2 - (tw * len(TABS) + 6 * (len(TABS) - 1)) // 2
         return [pygame.Rect(x0 + i * (tw + 6), 44, tw, 26) for i in range(len(TABS))]
 
     def _item_rects(self):
-        return [pygame.Rect(14, 80 + i * 37, 210, 33) for i in range(len(self.items()))]
+        step, h = (32, 29) if self.kind in LEVELLED else (37, 33)
+        return [pygame.Rect(14, 80 + i * step, 210, h) for i in range(len(self.items()))]
 
     def _action_rect(self):
         W = self.app.view.width
@@ -81,7 +112,7 @@ class GarageScene(BackdropScene):
                     self._set_tab(i)
             for i, r in enumerate(self._item_rects()):
                 if r.collidepoint(x, y):
-                    if self.sel == i and self.owned(self.items()[i]["id"]) and self.kind != "theme":
+                    if self.sel == i and self.owned(self.items()[i]["id"]) and self.kind not in LEVELLED:
                         self.act()          # second tap on an owned item equips it
                     self.sel = i
             if self._action_rect().collidepoint(x, y):
@@ -101,14 +132,28 @@ class GarageScene(BackdropScene):
     def act(self):
         p = self.app.profile
         it = self.items()[self.sel]
+        if self.kind in LEVELLED:
+            level = self._level(it["id"])
+            price = self._price(it["id"])
+            if self.kind == "tune":
+                bought = price is not None and shop.buy_tune_level(p, p.selected["vehicle"], it["id"])
+            else:
+                bought = price is not None and shop.buy_kit_level(p, it["id"])
+            if price is None:
+                self.app.audio.ui("deny")
+                self.flash = ("Already maxed", (200, 196, 220), 50)
+            elif bought:
+                self.app.audio.ui("buy")
+                self.flash = (f"{it['name']} level {level + 1}!", C.GOOD, 70)
+            else:
+                self.app.audio.ui("deny")
+                self.flash = (f"Need {price - p.currency} more coins", C.DANGER, 60)
+            return
         if not self.owned(it["id"]):
             if shop.buy(p, self.kind, it["id"]):
                 self.app.audio.ui("buy")
                 self.flash = (f"Unlocked {it['name']}!", C.GOOD, 70)
-                if self.kind != "theme":
-                    shop.select(p, self.kind, it["id"])
-                else:
-                    shop.select(p, self.kind, it["id"]) if not shop.is_selected(p, "theme", it["id"]) else None
+                shop.select(p, self.kind, it["id"])
             else:
                 self.app.audio.ui("deny")
                 self.flash = (f"Need {it['price'] - p.currency} more coins", C.DANGER, 60)
@@ -134,6 +179,9 @@ class GarageScene(BackdropScene):
             button(surf, r, label, on=i == self.tab, size=18)
         items = self.items()
         for i, (r, it) in enumerate(zip(self._item_rects(), items)):
+            if self.kind in LEVELLED:
+                self._draw_kit_row(surf, r, it, i == self.sel)
+                continue
             owned = self.owned(it["id"])
             selected = shop.is_selected(p, self.kind, it["id"])
             pygame.draw.rect(surf, (78, 70, 110) if i == self.sel else (46, 42, 66), r, border_radius=6)
@@ -142,7 +190,7 @@ class GarageScene(BackdropScene):
             hud.text(surf, it["name"], (r.x + 10, r.centery), 22, C.HUD_FG if owned else (190, 186, 210),
                      anchor="midleft")
             if selected and (owned or it["price"] == 0):
-                tag, col = ("ON" if self.kind == "theme" else "EQUIPPED"), C.GOOD
+                tag, col = "EQUIPPED", C.GOOD
             elif owned:
                 tag, col = "OWNED", (200, 196, 220)
             else:
@@ -158,48 +206,101 @@ class GarageScene(BackdropScene):
         panel_w = W - x0 - 12
         hud.panel(surf, (x0, 80, panel_w, 214), 190)
         hud.text(surf, it["name"], (x0 + 12, 88), 28, C.ACCENT)
-        _wrap(surf, it["desc"], x0 + 12, 114, panel_w - 24, 18)
+        if self.kind not in LEVELLED:
+            _wrap(surf, it["desc"], x0 + 12, 114, panel_w - 24, 18)
         sel = p.selected
-        if self.kind in ("vehicle", "livery"):
+        if self.kind in ("vehicle", "livery", "rider", "boost"):
             vehicle = it["id"] if self.kind == "vehicle" else sel["vehicle"]
-            livery = it["id"] if self.kind == "livery" else sel["livery"]
+            bike = it["id"] if self.kind == "livery" else sel["livery"]
+            rider = it["id"] if self.kind == "rider" else sel.get("rider", bike)
+            livery = livery_key(bike, rider)
             frame = (self.t // 6) % 2
             img = self.sprites.vehicle(vehicle, livery, frame)
             big = pygame.transform.scale(img, (img.get_width() * 3, img.get_height() * 3))
-            surf.blit(big, (x0 + 4, 140))
+            if self.kind == "boost":
+                self._draw_boost_preview(surf, it["id"], x0 + 4, 140, big, panel_w)
+            else:
+                surf.blit(big, (x0 + 4, 140))
             if self.kind == "vehicle":
-                self._stat_bars(surf, base_stats(vehicle), x0 + 170, 146, panel_w - 182)
-        elif self.kind == "kit":
-            hud.text(surf, "Pick one starting upgrade. Tap again to unequip.", (x0 + 12, 160), 18,
-                     (200, 196, 220))
-            cur = sel.get("start_upgrade")
-            from run.upgrades import UPGRADES
-            hud.text(surf, f"Equipped: {UPGRADES[cur].title(self.app.profile.settings.get('throttle_mode', 'one')) if cur else 'none'}", (x0 + 12, 186), 22)
+                self._stat_bars(surf, p.player_stats(vehicle), x0 + 170, 146, panel_w - 182,
+                                full=base_stats(vehicle))
         else:
-            from ui.render import WorldRenderer
-            if getattr(self, "_theme_prev", (None,))[0] != it["id"]:
-                rd = WorldRenderer(320, it["id"])
-                s = pygame.Surface((320, 360))
-                rd.draw_backdrop(s, 200)
-                rd.draw_track(s, self._bg_track, 200)
-                self._theme_prev = (it["id"], pygame.transform.smoothscale(s.subsurface((0, 60, 320, 280)), (176, 154)))
-            surf.blit(self._theme_prev[1], (x0 + 12, 134))
-            hud.text(surf, "Themes marked ON rotate", (x0 + 196, 150), 16, (200, 196, 220))
-            hud.text(surf, "through your heats.", (x0 + 196, 166), 16, (200, 196, 220))
+            self._draw_kit_detail(surf, it, x0, panel_w)
+            return
         owned = self.owned(it["id"])
         if not owned:
             label = f"BUY  {it['price']}c"
-        elif self.kind == "theme":
-            label = "TURN OFF" if shop.is_selected(p, "theme", it["id"]) else "TURN ON"
-        elif self.kind == "kit":
-            label = "UNEQUIP" if sel.get("start_upgrade") == it["id"] else "EQUIP"
         else:
             label = "EQUIPPED" if shop.is_selected(p, self.kind, it["id"]) else "EQUIP"
         button(surf, self._action_rect(), label, on=True, size=22,
                enabled=owned or p.currency >= it["price"])
 
-    def _stat_bars(self, surf, s, x, y, w):
-        rows = [
+    def _draw_boost_preview(self, surf, boost, x, y, big, panel_w):
+        """The bike with its heat flame at three heats: cold, boost, red window.
+        Drawn at sprite scale into a small layer, then doubled."""
+        from types import SimpleNamespace
+        from ui.render import WorldRenderer
+        rd = getattr(self, "_flame_rd", None) or WorldRenderer(320)
+        self._flame_rd = rd
+        sel = self.app.profile.selected
+        sprite = self.sprites.vehicle(sel["vehicle"], self.app.profile.player_livery(), (self.t // 6) % 2)
+        cx, cy = 66, 60                                   # contact point inside the layer
+        temps = (C.ONE_BOOST_AT * 0.7, (C.ONE_BOOST_AT + C.ONE_SUPER_AT) / 2, C.ONE_SUPER_AT + 3)
+        for k, temp in enumerate(temps):
+            layer = pygame.Surface((100, 66), pygame.SRCALPHA)
+            fake = SimpleNamespace(x=0.0, lane_pos=0.0, angle=0.0, temp=temp,
+                                   h=C.lane_y(0) + C.LANE_SPACING // 2 + 2 - cy,
+                                   stats=SimpleNamespace(vehicle=sel["vehicle"]))
+            rd.draw_heat_flame(layer, fake, C.BIKE_SCREEN_X - cx, self.t, boost)
+            layer.blit(sprite, (cx - art.CONTACT[0], cy - art.CONTACT[1]))
+            big2 = pygame.transform.scale(layer, (layer.get_width() * 6 // 5, layer.get_height() * 6 // 5))
+            bx = x + 4 + k * (panel_w - 16) // 3
+            surf.blit(big2, (bx, y + 4))
+            hud.text(surf, ("cold", "boost", "red")[k], (bx + big2.get_width() * 2 // 3, y + 88), 15,
+                     (200, 196, 220), anchor="center")
+
+    # -- Starter Kit ----------------------------------------------------------------------
+    def _draw_kit_row(self, surf, r, it, on):
+        level = self._level(it["id"])
+        pygame.draw.rect(surf, (78, 70, 110) if on else (46, 42, 66), r, border_radius=6)
+        if on:
+            pygame.draw.rect(surf, C.ACCENT, r, 2, border_radius=6)
+        hud.text(surf, it["name"], (r.x + 10, r.centery), 20, C.HUD_FG if level else (190, 186, 210),
+                 anchor="midleft")
+        for k in range(MAX_LEVEL):                    # level pips
+            x = r.right - 10 - (MAX_LEVEL - k) * 9
+            col = CATEGORY_COLORS.get(it["category"], C.GOOD) if k < level else (90, 86, 110)
+            pygame.draw.rect(surf, col, (x, r.centery - 4, 7, 8), border_radius=2)
+
+    def _draw_kit_detail(self, surf, it, x0, panel_w):
+        p = self.app.profile
+        level = self._level(it["id"])
+        price = self._price(it["id"])
+        grey = (200, 196, 220)
+        head = it["category"].upper()
+        if self.kind == "tune":
+            head = VEHICLES[p.selected["vehicle"]]["name"].upper()
+        hud.text(surf, f"{head}  -  level {level} / {MAX_LEVEL}", (x0 + 12, 118), 18, grey)
+        hud.text(surf, "Now:", (x0 + 12, 146), 18, grey)
+        now = self._describe(it["id"], level) if level or self.kind == "tune" else "nothing yet"
+        hud.text(surf, now, (x0 + 62, 146), 18)
+        if price is not None:
+            hud.text(surf, "Next:", (x0 + 12, 168), 18, grey)
+            hud.text(surf, self._describe(it["id"], level + 1), (x0 + 62, 168), 18, C.GOOD)
+        hud.text(surf, "Max:", (x0 + 12, 190), 18, grey)
+        hud.text(surf, self._describe(it["id"], MAX_LEVEL), (x0 + 62, 190), 18, grey)
+        note = ("Tunes your equipped bike only: every bike is tuned on its own, and level 5 "
+                "is its full stat. Each level costs more than the last." if self.kind == "tune" else
+                "Every level you buy applies to every run, all kit items at once. "
+                "Each level costs more than the last.")
+        _wrap(surf, note, x0 + 12, 226, panel_w - 24, 16)
+        label = "MAXED" if price is None else f"LEVEL UP  {price}c"
+        button(surf, self._action_rect(), label, on=True, size=22,
+               enabled=price is not None and p.currency >= price)
+
+    @staticmethod
+    def _stat_rows(s):
+        return [
             ("Top speed", (s.max_speed_a - 38) / 14),
             ("Accel", (1 / s.accel_interval - 0.18) / 0.14),
             ("Cool engine", (0.10 - s.heat_b) / 0.05),
@@ -209,11 +310,19 @@ class GarageScene(BackdropScene):
             ("Grass grip", (s.grip[GRASS] - 0.6) / 0.4),
             ("Sand grip", (s.grip[SAND] - 0.6) / 0.4),
         ]
-        for i, (label, k) in enumerate(rows):
+
+    def _stat_bars(self, surf, s, x, y, w, full=None):
+        """Bars for stats `s`; with `full`, a dim marker shows the fully tuned value."""
+        rows = self._stat_rows(s)
+        fulls = self._stat_rows(full) if full else [(None, None)] * len(rows)
+        for i, ((label, k), (_, kf)) in enumerate(zip(rows, fulls)):
             yy = y + i * 17
             hud.text(surf, label, (x, yy), 16)
             bw = max(40, w - 90)
             surf.fill((40, 36, 52), (x + 86, yy + 3, bw, 8))
+            if kf is not None and kf > k + 0.01:
+                kf = max(0.05, min(1.0, kf))
+                surf.fill((80, 76, 100), (x + 86, yy + 3, int(bw * kf), 8))     # room to tune
             k = max(0.05, min(1.0, k))
             col = C.GOOD if k > 0.66 else (C.ACCENT if k > 0.33 else C.DANGER)
             surf.fill(col, (x + 86, yy + 3, int(bw * k), 8))

@@ -13,20 +13,26 @@ CPU rivals and the player controls, verify them, archive the recordings you
 used, and log what you did.
 
 ## The game, briefly
-- A **run** is 6 heats (`hypetrike/run/manager.py`, `RUN_HEATS`). Each heat is a
-  race against 3 CPU rivals with a placing target. Missing a target ends the
-  run. After each cleared heat the player picks 1 of 3 upgrades
-  (`hypetrike/run/upgrades.py`). Heats 3 and 5 add a modifier. **The final
-  heat is always the Volcano (lava) level**: heat rises faster and cools
-  slower, and puddles are lava pits.
+- A **run** tours 5 biomes, easiest first (`BIOMES` in
+  `hypetrike/run/manager.py`: Valley, Desert, Night, Stadium, Volcano), 3
+  races each: two normal races and a **boss**. That is `RUN_HEATS` = 15 races
+  ("heats" in the code and recordings; `heat` index 0..14). Each race is
+  against 3 CPU rivals with a placing target; missing one ends the run.
+  Normal races need a podium (top 3 in Valley/Desert, top 2 after), bosses a
+  win. After a normal race the player picks 1 of 3 regular upgrades; after a
+  boss, 1 of 3 **elite** upgrades (`tier="elite"` in
+  `hypetrike/run/upgrades.py`). Races 8 and 11 (second race of Night and
+  Stadium) add a modifier. **All three Volcano races** have the lava physics:
+  heat rises faster and cools slower, and puddles are lava pits.
 - Default throttle is **one-button**: heat is the throttle. 12 heat bars; cold
   → boost band from heat 9 → red **super boost** for the top 3 bars → explosion
   at 32. Pads add 1/2/3 bars. Classic mode (A throttle, B turbo, overheat
   stall) still exists, and the CPU rivals always drive classic.
 - The player gets better over a run in **two ways**: their own skill grows with
   practice (later recordings show it), and upgrades stack. A good curve leaves
-  room for both. Early heats must be comfortable for a new player. The final
-  heat should be a real fight for an improved, upgraded player, not a wall.
+  room for both. Early biomes must be comfortable for a new player. Bosses
+  should be a step up from their biome's races, and the Volcano boss a real
+  fight for an improved, upgraded player, not a wall.
 
 ## Your tools
 Run everything from the repo root with `.venv/bin/python`.
@@ -39,7 +45,12 @@ Run everything from the repo root with `.venv/bin/python`.
 - `tools/tuning.py show ID [--rivals]`: event timeline of one race (crashes,
   landings, pads, splashes, blow-ups by segment and time). Use it to check
   *why* a heat went badly before you change anything.
-- `tools/tuning.py sim --seeds N --mode one|classic|both`: full simulated runs
+- `tools/tuning.py landsim --seeds N`: landing outcomes per jump (perfect /
+  clean / rough / crash) for the mouse "button" scheme vs keys, per skill tier.
+  Use it for air-control changes; the simulated button player
+  (`ButtonPilot` in `tools/tuning.py`) presses with a reaction time that
+  shrinks with skill.
+- `tools/tuning.py sim --seeds N --mode one|classic|both [--controls button|keys]`: full simulated runs
   with AI players (novice / average / good, plus **learning**, which goes from
   novice to good across the run and picks upgrades). Shows target-met % per
   heat. The `learning` row should follow `TARGET_CURVE`. A sim takes roughly
@@ -51,11 +62,31 @@ Run everything from the repo root with `.venv/bin/python`.
 
 ## Levers (where difficulty lives)
 - **CPU rivals**: `rival_setup()` in `hypetrike/race.py`. Speed range,
-  acceleration, who uses turbo, landing skill, blunder and miss rates, all
-  driven by `rival_level` 0..1. Per-heat level: `_plan_heat()` in
-  `hypetrike/run/manager.py` (currently `i / (RUN_HEATS - 1)`, linear).
-  Reshaping that curve (for example easing in, steepening late) is often the
-  cleanest fix.
+  acceleration, landing skill, blunder and miss rates, and the **heat plan**
+  (keep, band): rivals ride the player's one-button heat model through
+  `RivalPilot`, so `keep` decides whether they cruise under the boost band or
+  ride in it (never the red). All driven by `rival_level` 0..1.
+- **Bosses** (`hypetrike/bosses.py`): the best-setup rival in each boss race
+  is promoted. It always boosts and leaves a lane trail (`TRAIL_LIFE`,
+  `TRAIL_REACH`, `TRAIL_HEAT`). Rate boss races separately from normal ones.
+- **Player bike tuning** (`meta/bike_tune.py`): players start with weaker bikes
+  (level 0) and tune them up per vehicle. Recordings store `context.bike_levels`.
+  Sims ride full stats, so they show a tuned player. Read low tuning levels in
+  the recordings as an expected handicap, not a balance bug.
+- **CPU Starter Kit**: every rival also gets Starter Kit levels
+  (`meta/kit.py`): `round(RIVAL_KIT_MAX * rival_level)` levels spread at
+  random over `RIVAL_KIT_ITEMS`, different per rival and race (seeded, so
+  replays match). This is what makes the player need their own kit later on.
+  Recordings store each rival's `kit` and key `stats` in `summary.rivals`, and
+  the player's kit in `context.kit`; the report shows `player_kit_levels`,
+  `rival_kit_levels` and `rival_top_speed` per heat, and `show` lists every
+  rival. **Always compare player vs rival kit levels before blaming the track
+  or the controls**: a player with no kit facing late-run rivals is expected
+  to struggle (that's the meta loop), while one with a similar kit losing badly
+  points at `RIVAL_KIT_MAX`, the heat plan or skill. Per-race level: `DEPTH_RIVAL_LEVELS` (one per
+  generator depth) in `hypetrike/run/manager.py`. A biome's first race uses its
+  own depth's level, the boss the next depth's, and the second race sits
+  `SECOND_RACE_STEP` of the way between. Note that the level is clamped at 1.
 - **Targets**: `_plan_heat()`: the place needed per heat.
 - **Modifiers (the per-round disadvantages)**: `hypetrike/run/manager.py`.
   `MODIFIER_HEATS` says which heats carry one. Which modifier a heat gets is a
@@ -77,8 +108,9 @@ Run everything from the repo root with `.venv/bin/python`.
   `length_for(depth)`, the `LIBRARY` segments (`diff`, `weight`, `min_depth`,
   hazards), grass/sand zones in `_materials()`, the pad budget
   (`HEAT_PER_COL_TURBO`, `HEAT_MARGIN`) and the size mix in `_place_coolant()`.
-  The heat index is the generator depth in runs.
-- **Volcano final**: `LAVA_HEAT_MULT`, `LAVA_COOL_MULT`, `LAVA_PIT_*` in
+  In runs the generator depth is `depth_for(i)`: the biome index (0..4) for
+  normal races, one more for the boss (Volcano boss = depth 5).
+- **Volcano biome** (all 3 of its races): `LAVA_HEAT_MULT`, `LAVA_COOL_MULT`, `LAVA_PIT_*` in
   `hypetrike/config.py`.
 - **Upgrades**: only if the data clearly shows one dominating or useless.
 
@@ -95,6 +127,16 @@ Run everything from the repo root with `.venv/bin/python`.
   - Per-vehicle handling: the `BikeStats` defaults in `base_stats()` in
     `hypetrike/bike.py` (pitch rate, nose drop, landing windows, grip). Prefer
     these over global constants when only one vehicle feels off.
+  - Mouse "button" scheme (the default mouse controls, `hypetrike/button_air.py`):
+    mid-air the button pushes the nose down (a button held up the ramp carries
+    on into the push at take-off), starting at `PRESS_START` of the pitch rate
+    and growing `PRESS_GROW` per tick held; released, the nose lifts at the
+    normal drift rate plus `RELEASE_GROW` of the pitch rate per tick free, up to
+    `RELEASE_MAX` (config). Recordings show it as `ramp` set in the air controls
+    (`settings.mouse_steer == "button"`). A press that's too coarse to land
+    with = `PRESS_*` too fast; nose-low landings after holding the button off a
+    ramp = `PRESS_*` too strong; nose-low landings on up-slopes after a long
+    release = `RELEASE_*` too slow.
   - Mouse and touch input: the zone constants at the top of
     `hypetrike/ui/input.py` (`LEAN_*`, `AIR_LEAN_*`, `AIM_*`, `LANE_BAND`,
     `LANE_HYST`, `HOVER_HYST`, `RAMP_LEAN_LOOKAHEAD`, `ANCHOR_*`, `SWIPE_STEP`).

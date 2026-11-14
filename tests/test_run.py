@@ -4,7 +4,8 @@ import random
 import config as C
 from bike import base_stats
 from race import Race
-from run.manager import RunState, RUN_HEATS
+from run.manager import RunState, RUN_HEATS, BIOMES, RACES_PER_BIOME, is_boss, biome_of
+from meta.kit import apply_kit
 from run.upgrades import UPGRADES, apply_upgrades, offer
 from track.validator import GhostAI
 
@@ -12,13 +13,13 @@ from track.validator import GhostAI
 def test_upgrades_stack_multiplicatively():
     s = apply_upgrades(base_stats(), ["big_bore", "big_bore"])
     assert abs(s.max_speed_a - C.SPEED_MAX_A * 1.04 ** 2) < 1e-9
-    s = apply_upgrades(base_stats(), ["turbo_tune", "turbo_tune", "cool_head"])
-    assert abs(s.heat_b - C.HEAT_B * 0.8 ** 2) < 1e-9 and abs(s.red_heat_mult - 0.65) < 1e-9
+    s = apply_upgrades(base_stats(), ["turbo_tune", "turbo_tune"])
+    assert abs(s.heat_b - C.HEAT_B * 0.8 ** 2) < 1e-9
 
 
 def test_upgrades_do_not_mutate_base():
     b = base_stats()
-    apply_upgrades(b, ["all_terrain", "big_bore"])
+    apply_upgrades(b, ["paddle_tyres", "big_bore"])
     assert b == base_stats()
 
 
@@ -27,9 +28,9 @@ def test_offer_three_distinct_and_respects_caps():
     for _ in range(50):
         o = offer(rng, [], 3)
         assert len({u.id for u in o}) == 3
-    capped = ["heat_sink", "heat_sink"]
+    capped = ["blow_off", "blow_off"]
     for _ in range(50):
-        assert "heat_sink" not in [u.id for u in offer(rng, capped, 3)]
+        assert "blow_off" not in [u.id for u in offer(rng, capped, 3)]
 
 
 def test_upgrades_visibly_change_behaviour():
@@ -43,10 +44,58 @@ def test_upgrades_visibly_change_behaviour():
     assert b.speed > a.speed
 
 
-def test_run_has_six_heats_and_final_is_a_win_target():
+def test_run_is_five_biomes_of_two_races_and_a_boss():
     r = RunState(seed=5)
-    assert len(r.heats) == RUN_HEATS == 6
-    assert r.heats[-1].target.kind == "place" and r.heats[-1].target.value == 1
+    assert len(r.heats) == RUN_HEATS == 15 and RACES_PER_BIOME == 3
+    assert BIOMES == ("valley", "desert", "night", "stadium", "lava")
+    for h in r.heats:
+        assert h.biome == BIOMES[h.index // 3]
+        assert h.boss == (h.index % 3 == 2)
+        if h.boss:                                  # bosses must be won ...
+            assert h.target.kind == "place" and h.target.value == 1
+        else:                                       # ... normal races only need a podium
+            assert h.target.value >= 2
+
+
+def test_bosses_are_harder_than_their_biome_races():
+    r = RunState(seed=5)
+    for b in range(len(BIOMES)):
+        n1, n2, boss = r.heats[3 * b: 3 * b + 3]
+        assert boss.depth == n1.depth + 1 == n2.depth + 1
+        assert boss.rival_level > n2.rival_level >= n1.rival_level
+
+
+def test_each_race_is_themed_by_its_biome():
+    r = RunState(seed=3)
+    for i in (0, 4, 8, 14):
+        r.heat_i = i
+        assert r.prepare_heat().track.theme == BIOMES[biome_of(i)]
+
+
+def test_boss_win_offers_elite_upgrades():
+    r = RunState(seed=7)
+    for i in range(RUN_HEATS - 1):
+        tiers = {u.tier for u in r.offer_after(i)}
+        assert tiers == ({"elite"} if is_boss(i) else {"normal"})
+    for mode in ("one", "classic"):                 # 3 picks to choose from even at the 4th boss win
+        elite = [u for u in UPGRADES.values() if u.tier == "elite" and mode in u.modes]
+        assert len(elite) - 3 >= 3
+    # Clearing a boss moves you into the next biome
+    r = RunState(seed=7)
+    r.heat_i = 2
+    r.prepare_heat()
+    r.record({"finished": True, "time": 1, "position": 1, "perfect": 0, "distance": 10}, base_stats())
+    assert r.status == "active" and all(u.tier == "elite" for u in r.pending_offer)
+    r.choose(r.pending_offer[0].id)
+    assert r.heat.biome == "desert" and r.biomes_cleared() == 1
+
+
+def test_elite_upgrades_beat_their_regular_counterparts():
+    b = base_stats()
+    assert apply_upgrades(b, ["works_engine"]).max_speed_a > apply_upgrades(b, ["big_bore", "big_bore"]).max_speed_a
+    pro = apply_upgrades(b, ["pro_suspension"])
+    assert pro.rough_loss_mult < apply_upgrades(b, ["plush_forks"]).rough_loss_mult
+    assert pro.land_saves > apply_upgrades(b, ["crumple_zone"]).land_saves
 
 
 def test_failing_a_heat_ends_the_run():
@@ -80,10 +129,10 @@ def test_full_run_can_be_won_and_pays_out():
 
 def test_lost_run_pays_less_than_won():
     won = RunState(seed=2); lost = RunState(seed=2)
-    for st, n in ((won, 6), (lost, 1)):
+    for st, n in ((won, RUN_HEATS), (lost, 1)):
         for i in range(n):
             st.results.append({"heat": i, "met": True})
-        st.status = "won" if n == 6 else "lost"
+        st.status = "won" if n == RUN_HEATS else "lost"
     assert won.payout()[0] > lost.payout()[0]
 
 
@@ -118,14 +167,43 @@ def test_rivals_get_faster_and_cleaner_each_round():
     levels = [h.rival_level for h in r.heats]
     assert levels == sorted(levels) and levels[0] == 0 and levels[-1] == 1
     prev = None
-    for lv in levels:
-        stats, ai = rival_setup(lv, 1, 3)
+    for lv in sorted(set(levels)):
+        stats, ai, heat = rival_setup(lv, 1, 3)
         cur = (stats["max_speed_a"], ai["skill"], -ai["blunder"], -ai["miss"])
         if prev:
             assert all(c >= p for c, p in zip(cur, prev)) and cur != prev
         prev = cur
-    first, ai0 = rival_setup(0.0, 1, 3)
+    first, ai0, heat0 = rival_setup(0.0, 1, 3)
     assert first["max_speed_a"] < C.SPEED_MAX_A and ai0["blunder"] > 0 and ai0["miss"] > 0
+    assert heat0[0] < C.ONE_BOOST_AT                         # first-round rivals never boost
+    assert all(rival_setup(1.0, i, 3)[2][0] - rival_setup(1.0, i, 3)[2][1] >= C.ONE_BOOST_AT
+               for i in range(3))                            # final-round rivals ride the boost band
+    assert all(rival_setup(lv, i, 3)[2][0] < C.ONE_SUPER_AT for lv in (0, .5, 1) for i in range(3))
+
+
+def test_rivals_get_a_random_kit_within_the_difficulty_budget():
+    from race import Race, RIVAL_KIT_MAX
+    from track.tiles import make_track
+    tr = make_track("S" + "." * 40, laps=1)
+    for lv in (0.0, 0.5, 1.0):
+        race = Race(tr, rivals=3, rival_level=lv, seed=9, countdown=False)
+        for kit, rb in zip(race.rival_kits, race.rivals):
+            assert sum(kit.values()) == round(RIVAL_KIT_MAX * lv) and "sponsor" not in kit
+            assert rb.one_button and rb.temp == 0.0
+        if lv == 1.0:
+            assert len({tuple(sorted(k.items())) for k in race.rival_kits}) > 1     # each one differs
+    a = Race(tr, rivals=3, rival_level=1.0, seed=9, countdown=False).rival_kits
+    assert a == Race(tr, rivals=3, rival_level=1.0, seed=9, countdown=False).rival_kits   # replayable
+
+
+def test_rival_heat_flame_tells_their_speed():
+    from race import Race
+    from track.tiles import make_track
+    race = Race(make_track("S" + "." * 200, laps=1), rivals=3, rival_level=1.0, seed=3, countdown=False)
+    for _ in range(900):
+        race.step(Controls())
+    for rb in race.rivals:
+        assert rb.boost_level == 1 and rb.speed > rb.stats.max_speed_a   # boosting, and it shows
 
 
 def test_first_map_has_no_whoops():
@@ -162,15 +240,15 @@ def _flat(n=200):
     return make_track("S" + "." * n, laps=1)
 
 
-def _bike(ids, one=True):
-    b = Bike(_flat(), apply_upgrades(base_stats(), ids))
+def _bike(ids, one=True, kit=None):
+    b = Bike(_flat(), apply_upgrades(apply_kit(base_stats(), kit), ids))
     b.one_button = one
     return b
 
 
 def test_offers_respect_the_throttle_mode():
     rng = random.Random(4)
-    one_only = {u.id for u in UPS.values() if u.modes == ("one",)}
+    one_only = {u.id for u in UPS.values() if u.modes == ("one",) and u.tier == "normal"}
     assert {"warm_up", "heat_wrap", "supercharger", "pre_heater"} <= one_only
     seen = set()
     for _ in range(300):
@@ -217,16 +295,17 @@ def test_heat_wrap_keeps_speed_after_letting_go():
     assert speed_after_release(["heat_wrap"]) > speed_after_release([])
 
 
-def test_cool_head_stretches_the_red_window():
-    def red_ticks(ids):
-        b = _bike(ids); b.temp = C.ONE_SUPER_AT
+def test_kit_cool_head_stretches_the_red_window():
+    def red_ticks(kit):
+        b = _bike([], kit=kit); b.temp = C.ONE_SUPER_AT
         return ticks_until(b, lambda b: b.state != "ride")
-    assert red_ticks(["cool_head"]) > red_ticks([]) * 1.3
+    assert red_ticks({"cool_head": 5}) > red_ticks({"cool_head": 2}) > red_ticks({})
+    assert red_ticks({"cool_head": 5}) > red_ticks({}) * 1.3
 
 
-def test_radiator_vents_once_per_race_in_both_modes():
+def test_blow_off_valve_vents_once_per_race_in_both_modes():
     for one in (True, False):
-        b = _bike(["radiator"], one); b.temp = C.TEMP_OVERHEAT - 0.01
+        b = _bike(["blow_off"], one); b.temp = C.TEMP_OVERHEAT - 0.01
         ev = b.step(Controls(a=True, b=True))
         assert ("vent",) in ev and b.state == "ride" and b.temp < C.TEMP_OVERHEAT - 1
         b.temp = C.TEMP_OVERHEAT - 0.01
@@ -253,20 +332,20 @@ def test_pre_heater_restarts_warm_after_a_crash():
         assert (0 < b.temp < C.ONE_BOOST_AT) == warm
 
 
-def test_heat_sink_shortens_blow_ups():
-    a, b = _bike([]), _bike(["heat_sink"])
+def test_kit_radiator_shortens_blow_ups():
+    a, b = _bike([]), _bike([], kit={"radiator": 3})
     for x in (a, b):
         x.temp = C.TEMP_OVERHEAT - 0.01
         x.step(Controls(a=True))
     assert b.crash_total < a.crash_total
 
 
-def test_quick_steer_changes_lanes_faster():
-    def lane_ticks(ids):
-        b = _bike(ids)
+def test_kit_quick_steer_changes_lanes_faster():
+    def lane_ticks(kit):
+        b = _bike([], kit=kit)
         b.step(Controls(lane_down=True))
         return ticks_until(b, lambda b: b.lane_pos == b.lane, Controls())
-    assert lane_ticks(["quick_steer"]) < lane_ticks([])
+    assert lane_ticks({"quick_steer": 5}) < lane_ticks({})
 
 
 def _land(b, err):
@@ -292,3 +371,117 @@ def test_hype_landing_and_plush_forks():
         x.temp = 20.0
         _land(x, rough)
     assert plush.temp > plain.temp
+
+
+# --- run upgrades redesigned so none repeats a Starter Kit item -------------------------
+def test_no_run_upgrade_repeats_a_kit_item():
+    from meta.kit import KIT
+    kit_names = {it.name for it in KIT.values()}
+    for u in UPGRADES.values():
+        assert u.id not in KIT and u.title("one") not in kit_names and u.title("classic") not in kit_names, u.id
+    # ... and no run upgrade touches a stat a kit item levels up
+    base = base_stats()
+    kit_fields = set()
+    for it in KIT:
+        a, b = vars(base), vars(apply_kit(base, {it: 5}))
+        kit_fields |= {k for k in a if a[k] != b[k]}
+    for u in UPGRADES.values():
+        a, b = vars(base), vars(apply_upgrades(base, [u.id]))
+        assert not {k for k in a if a[k] != b[k]} & kit_fields, u.id
+
+
+def test_kit_levels_climb_to_the_old_full_value_and_cost_more_each_level():
+    from meta.kit import KIT, MAX_LEVEL
+    b = base_stats()
+    assert apply_kit(b, {"gyro": 0}).pitch_rate == b.pitch_rate
+    assert abs(apply_kit(b, {"gyro": MAX_LEVEL}).pitch_rate - b.pitch_rate * 1.2) < 1e-9
+    assert apply_kit(b, {"gyro": 1}).pitch_rate < apply_kit(b, {"gyro": 2}).pitch_rate
+    assert abs(apply_kit(b, {"soft_shocks": MAX_LEVEL}).land_tolerance - b.land_tolerance * 1.2) < 1e-9
+    for it in KIT.values():
+        prices = [it.price(l) for l in range(MAX_LEVEL)]
+        assert prices == sorted(prices) and len(set(prices)) == MAX_LEVEL and it.price(MAX_LEVEL) is None
+
+
+def test_hang_time_turns_airtime_into_speed():
+    plain, hang = _bike([]), _bike(["hang_time"])
+    for b in (plain, hang):
+        _land(b, 0.0)
+    assert hang.speed > plain.speed
+
+
+def test_crumple_zone_saves_one_crash_landing_per_race():
+    b = _bike(["crumple_zone"])
+    _land(b, -(C.LAND_ROUGH_NOSE + 15))
+    assert b.state == "ride" and b.stats_counters["rough"] == 1
+    _land(b, -(C.LAND_ROUGH_NOSE + 15))
+    assert b.state == "crash"
+
+
+def test_adrenaline_slows_the_red_after_a_perfect_landing():
+    def red_ticks(ids):
+        b = _bike(ids)
+        _land(b, 0.0)
+        b.temp = C.ONE_SUPER_AT
+        return ticks_until(b, lambda b: b.state != "ride")
+    assert red_ticks(["adrenaline"]) > red_ticks([])
+
+
+def test_comeback_accelerates_faster_after_a_crash():
+    def speed_after(ids):
+        b = _bike(ids); b.temp = C.TEMP_OVERHEAT - 0.01
+        b.step(Controls(a=True))
+        ticks_until(b, lambda b: b.state == "ride", Controls())
+        for _ in range(60):
+            b.step(Controls(a=True))
+        return b.speed
+    assert speed_after(["comeback"]) > speed_after([])          # one-button: warms up faster
+    def classic_speed_after(ids):
+        b = _bike(ids, one=False); b.speed = 30
+        b._crash([], "nose")
+        ticks_until(b, lambda b: b.state == "ride", Controls())
+        for _ in range(60):
+            b.step(Controls(a=True))
+        return b.speed
+    assert classic_speed_after(["comeback"]) > classic_speed_after([])
+
+
+def test_slipstream_needs_a_rival_just_ahead():
+    a, b = _bike(["slipstream"]), _bike(["slipstream"])
+    b.drafting = True
+    for x in (a, b):
+        x.temp = 20.0
+        for _ in range(400):
+            x.temp = 20.0
+            x.step(Controls(a=True))
+    assert b.speed > a.speed
+
+
+def test_line_choice_kicks_speed_on_a_finished_lane_change():
+    b = _bike(["line_choice"]); b.speed = 30.0; b.temp = 20.0
+    b.step(Controls(a=True, lane_down=True))
+    before = b.speed
+    ticks_until(b, lambda b: b.lane_pos == b.lane)
+    assert b.speed >= before + 1
+
+
+def test_barrier_buster_smashes_one_barrier():
+    from track.tiles import DEBRIS
+    tr = make_track("S" + "." * 30, laps=1)
+    tr.surface[1][4] = tr.surface[1][8] = DEBRIS
+    b = Bike(tr, apply_upgrades(base_stats(), ["barrier_buster"]))
+    b.speed = 35
+    evs = []
+    while b.x < 10 * C.TILE_W and b.state == "ride":
+        b.speed = 35
+        evs += b.step(Controls(a=True))
+    assert ("smash",) in evs and ("crash", "debris") in evs
+
+
+def test_prize_money_and_bounty_pay_for_wins():
+    def total(ids):
+        r = RunState(seed=2, start_upgrades=ids)
+        r.results = [{"heat": 0, "met": True, "position": 1}, {"heat": 1, "met": True, "position": 3},
+                     {"heat": 2, "met": True, "position": 1}]
+        return r.payout()[1]["heats"]
+    assert total(["prize_money"]) == total([]) + 2 * 15
+    assert total(["bounty_hunter"]) == total([]) + 60

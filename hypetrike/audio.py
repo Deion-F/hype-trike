@@ -22,6 +22,34 @@ def hz(name):
     return 440.0 * 2 ** ((NOTE[pitch] + 12 * (octave + 1) - 69) / 12)
 
 
+def _on_wsl():
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except OSError:
+        return False
+
+
+def pre_init():
+    """Call before pygame.init(): open the mixer in the format the game's audio is
+    generated in (SR mono 16-bit), so nothing is resampled in Python, and with a
+    buffer that suits the platform. WSL (WSLg's PulseAudio bridge to Windows)
+    stutters with small buffers, so it gets a bigger one and a PulseAudio latency
+    target. Override with HYPE_AUDIO_BUFFER (samples) / PULSE_LATENCY_MSEC."""
+    import os
+    wsl = _on_wsl()
+    if wsl:
+        os.environ.setdefault("PULSE_LATENCY_MSEC", "40")
+    try:
+        buf = int(os.environ.get("HYPE_AUDIO_BUFFER", 1024 if wsl else 512))
+    except ValueError:
+        buf = 512
+    try:
+        pygame.mixer.pre_init(SR, -16, 1, buf, allowedchanges=0)
+    except TypeError:
+        pygame.mixer.pre_init(SR, -16, 1, buf)
+
+
 # --- synthesis helpers (lists of floats in -1..1) -----------------------------------
 def osc(freq, dur, wave="square", vol=0.3, duty=0.5, f_end=None, attack=0.004, decay=True,
         vib=0.0, sr=SR):

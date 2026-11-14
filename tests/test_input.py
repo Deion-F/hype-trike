@@ -247,3 +247,97 @@ def test_hover_lanes_still_lean_from_home(monkeypatch):
     m.press(300, lane_screen_y(1)); tick(inp, bike)
     m.move(300 - 60, lane_screen_y(1)); c = tick(inp, bike)
     assert c.left and bike.lane == 1
+
+
+def test_still_cursor_keeps_you_on_the_skyway(monkeypatch):
+    """Split bridge: the skyway lanes are drawn higher, so a cursor left where it
+    was ends up over the lower deck. A still cursor must not steer you off."""
+    from bike import Controls
+    from track.tiles import make_track, SPLIT_DRAW, SKY_H
+    tr = make_track("S" + "." * 6 + "..oryyyZyne" + "." * 10, laps=1)
+    inp, bike = make(lanes="hover"), Bike(tr, lane=0)
+    m = Mouse(monkeypatch, inp)
+    m.move(C.BIKE_SCREEN_X + 40, lane_screen_y(0)); tick(inp, bike, 2)
+    assert bike.lane == 0
+    col = tr.terrain.index(SPLIT_DRAW)
+    bike.speed = 30
+    while bike.x < col * C.TILE_W + 40:
+        c = inp.race_controls(bike)
+        inp.consume_edges()
+        c.a = True
+        bike.step(c)
+    assert bike.lane_index == 0 and abs(bike.h - SKY_H) < 1          # still up on the skyway
+    m.move(C.BIKE_SCREEN_X + 40, lane_screen_y(3)); tick(inp, bike, 4)
+    assert bike.lane == 3                                             # moving the cursor still steers
+
+
+# -- "button" scheme: click pulls up mid-air, the cursor only picks lanes ----------
+
+def make_button(mode="one"):
+    inp = make(mode)
+    inp.settings = {"mouse_steer": "button", "throttle_mode": mode}
+    return inp
+
+
+def test_button_scheme_is_the_default():
+    from meta.profile import DEFAULTS, Profile
+    assert DEFAULTS["settings"]["mouse_steer"] == "button"
+    old = Profile({"settings": {"mouse_steer": "angle", "settings_v": 2}})
+    assert old.settings["mouse_steer"] == "button"          # old default moved over once
+    held = Profile({"settings": {"mouse_steer": "hold", "settings_v": 2}})
+    assert held.settings["mouse_steer"] == "hold"           # a deliberate pick is kept
+    again = Profile({"settings": {"mouse_steer": "angle", "settings_v": 3}})
+    assert again.settings["mouse_steer"] == "angle"
+
+
+def test_button_scheme_ground_throttle_no_anchor_no_lean(monkeypatch):
+    inp, bike = make_button(), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    m.press(300, 200)
+    c = tick(inp, bike)
+    assert c.a and not c.left and not c.right and inp.anchor is None
+    m.move(100, 200); c = tick(inp, bike)                # sideways does nothing
+    assert not c.left and not c.right and inp.anchor is None
+
+
+def test_button_scheme_air_press_leans_forward_and_freezes_heat(monkeypatch):
+    inp, bike = make_button(), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    m.press(300, 200); tick(inp, bike)
+    bike.airborne = True                                 # took off with the button held
+    c = tick(inp, bike)
+    assert c.right and not c.left and c.ramp and c.a     # carries on into a forward lean; heat frozen
+    assert inp.tilt(c, bike) == (1, 1, 1)
+    m.release(300, 200); c = tick(inp, bike)
+    assert not c.right and not c.left and c.ramp and c.a  # released: nose lifts, still frozen
+    m.press(300, 200); c = tick(inp, bike)
+    assert c.right and c.ramp
+    bike.airborne = False; m.release(300, 200); c = tick(inp, bike)
+    assert not c.a and not c.ramp                        # landed, button up: coasting
+
+
+def test_button_scheme_lanes_follow_the_cursor(monkeypatch):
+    inp, bike = make_button(), Bike(static_track())
+    m = Mouse(monkeypatch, inp)
+    m.move(300, lane_screen_y(3)); tick(inp, bike, 6)
+    assert bike.lane == 3
+
+
+def test_button_pitch_winds_up_both_ways():
+    from bike import Controls
+    from track.tiles import make_track
+    def turn(ctl, n):
+        """Degrees the nose turns up in n ticks from level."""
+        b = Bike(make_track("S" + "." * 40, laps=1))
+        b.airborne, b.h, b.angle = True, 400.0, 0.0
+        for _ in range(n):
+            b._air(ctl, [])
+        return b.angle
+    free = Controls(ramp=True)
+    # released: the nose lifts, a short release a nudge, a long one a big swing
+    assert 0 < turn(free, 4) < 3.0
+    assert turn(free, 25) > 30.0
+    # held: the nose goes down, winding up the same way to near the keys rate
+    push = Controls(right=True, ramp=True)
+    tap, hold, keys = -turn(push, 4), -turn(push, 20), -turn(Controls(right=True), 20)
+    assert 0 < tap < 4 * C.PITCH_RATE * 0.6 and keys * 0.75 < hold < keys

@@ -28,7 +28,7 @@ VERSION = 1
 SAMPLE_EVERY = 6           # player state sample period (ticks)
 RIVAL_SAMPLE_EVERY = 30    # rival positions sample period (ticks)
 WEB_KEEP = 5               # recordings kept in memory on the web build
-CTL_BITS = ("a", "b", "left", "right", "lane_up", "lane_down")
+CTL_BITS = ("a", "b", "left", "right", "lane_up", "lane_down", "ramp")   # new bits go last (old recordings read 0)
 WEB = sys.platform == "emscripten"
 
 # Events worth logging (bike.step / race.step event names).
@@ -101,7 +101,7 @@ class Recorder:
             "track": {**to_compact(tr), "meta": {k: v for k, v in tr.meta.items() if k != "segments"},
                       "segments": tr.meta.get("segments")},
             "race": {"stats": asdict(b.stats), "one_button": b.one_button, "livery": livery,
-                     "rivals": len(race.rivals), "rival_level": race.rival_level,
+                     "rivals": len(race.rivals), "rival_level": race.rival_level, "boss": race.boss,
                      "seed": race.seed, "countdown": race.countdown_start},
             "inputs": [],
             "events": [],
@@ -165,7 +165,12 @@ class Recorder:
                 crash_reasons[r] = crash_reasons.get(r, 0) + 1
         rivals = []
         for i, rb in enumerate(race.rivals):
+            st = rb.stats
             rivals.append({"finish": race.rival_finish[i], "x": _r(rb.x, 1),
+                           "kit": dict(race.rival_kits[i]) if i < len(race.rival_kits) else {},
+                           "stats": {"max_speed_a": _r(st.max_speed_a, 1), "max_speed_b": _r(st.max_speed_b, 1),
+                                     "land_tolerance": _r(st.land_tolerance, 1),
+                                     "pitch_rate": _r(st.pitch_rate, 2)},
                            "crashes": count("crash", i + 1), "explodes": count("explode", i + 1),
                            "overheats": count("overheat", i + 1), "perfect": count("perfect", i + 1)})
         landings = sum(count(k) for k in ("perfect", "land", "rough")) + crash_reasons.get("nose", 0) \
@@ -176,7 +181,7 @@ class Recorder:
             "ticks": self._tick,
             "finished": bool(res.get("finished", race.finished)),
             "forfeit": bool(res.get("forfeit", False)),
-            "time": race.time_ticks,
+            "time": race.clock,
             "laps": list(race.lap_times),
             "position": race.position(),
             "field": len(race.rivals) + 1,
@@ -254,7 +259,7 @@ def rebuild(data):
     st = dict(rd["stats"])
     st["grip"] = {int(k): v for k, v in st["grip"].items()}
     stats = BikeStats(**st)
-    kwargs = dict(rivals=rd["rivals"], rival_level=rd["rival_level"], seed=rd["seed"])
+    kwargs = dict(rivals=rd["rivals"], rival_level=rd["rival_level"], seed=rd["seed"], boss=rd.get("boss"))
     return track, stats, kwargs, rd["one_button"], rd.get("livery", "flame"), unrle(data["inputs"])
 
 

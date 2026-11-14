@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass, field, replace
 
 import config as C
-from track.tiles import (GAP, MUD, DEBRIS, WATER, DIRT, GRASS, SAND, PADS, PAD_BARS,
+from track.tiles import (GAP, MUD, DEBRIS, WATER, DIRT, GRASS, SAND, PADS, PAD_BARS, RAMPS,
                          PITS, DECK_GAP, DRAW, draw_open, edge_heights)
 
 
@@ -19,6 +19,9 @@ class Controls:
     right: bool = False      # lean forward / nose down
     lane_up: bool = False    # edge-triggered this tick
     lane_down: bool = False
+    ramp: bool = False       # mouse "button" scheme, mid-air: pitch builds with hold time -
+                             # nose-down (right) starts gentle, and with no lean the nose
+                             # lifts faster the longer it's free (releasing leans back)
 
 
 @dataclass
@@ -56,6 +59,16 @@ class BikeStats:
     rough_loss_mult: float = 1.0       # share of the rough-landing speed / heat loss taken
     lane_rate: float = C.LANE_CHANGE_RATE
     respawn_heat: float = 0.0          # one-button: heat after recovering from a crash
+    # run-upgrade mechanics (see run/upgrades.py)
+    hang_kick: float = 0.0             # Hang Time: speed per second airborne on a clean landing
+    land_saves: int = 0                # Crumple Zone: crash landings turned rough, per race
+    adrenaline_ticks: int = 0          # Adrenaline: red zone heats slower for this long after a perfect
+    comeback_ticks: int = 0            # Comeback: double acceleration this long after remounting
+    draft_bonus: float = 0.0           # Slipstream: top-speed share while a rival is just ahead
+    lane_kick: float = 0.0             # Line Choice: speed kick per finished lane change
+    barrier_saves: int = 0             # Barrier Buster: barriers smashed instead of crashing, per race
+    prize_coins: int = 0               # Prize Money: coins per race won this run
+    boss_bounty: int = 0               # Bounty Hunter: coins per boss beaten this run
 
     def copy(self):
         return replace(self, grip=dict(self.grip))
@@ -81,7 +94,7 @@ VEHICLES = {
                      desc="Light and fast. Hot engine, twitchy and unforgiving.",
                      stats=dict(max_speed_a=48, max_speed_b=51, accel_interval=3.5,
                                 heat_a=0.07, heat_b=0.09, pitch_rate=2.7,
-                                land_tolerance=11, land_perfect=4,
+                                land_tolerance=12, land_perfect=4,
                                 grip={DIRT: 1.0, GRASS: 0.85, SAND: 0.65})),
 }
 
@@ -102,11 +115,13 @@ class Bike:
         self.lane_pos = float(lane)      # visual / physical lane (float)
         self.speed = 0.0
         self.temp = C.TEMP_START
-        self.h = track.ground(self.x)
+        self.h = track.ground(self.x, self.lane_index)
         self.vy = 0.0
         self.angle = 0.0                 # degrees, positive = nose up
         self.airborne = False
         self.air_ticks = 0
+        self.free_ticks = 0              # ticks the button has been up mid-air (Controls.ramp)
+        self.press_ticks = 0             # ticks the button has pushed the nose down (Controls.ramp)
         self.state = "ride"              # ride | crash | overheat | done
         self.timer = 0
         self.crash_reason = ""
@@ -126,6 +141,17 @@ class Bike:
         self._last_water_col = -1
         self.ticks = 0
         self.vents_left = self.stats.vent_charges
+        self.land_saves_left = self.stats.land_saves
+        self._perfect_grace = 0          # ticks left of "was lined up for a PERFECT just now"
+        self.barrier_saves_left = self.stats.barrier_saves
+        self.adrenaline = 0              # ticks of Adrenaline left
+        self.comeback = 0                # ticks of Comeback left
+        self.drafting = False            # set by the race: a rival is just ahead in this lane
+        self.trail = None                # set by the race: the boss trail kind we're riding in ...
+        self.trail_k = 1.0               # ... and its strength (minions 0.5)
+        self.heat_aura = 0.0             # boss aura: heat per tick (Heat Wave +, Sandblast -)
+        self.land_mult = 1.0             # boss aura: landing windows scaled (Hex 0.7)
+        self._kick_cd = 0                # Line Choice cooldown
         self.stats_counters = {"perfect": 0, "landings": 0, "crashes": 0, "rough": 0}
 
     # ------------------------------------------------------------------------
@@ -146,8 +172,24 @@ class Bike:
         if t < C.ONE_BOOST_AT:
             return s.max_speed_a * max(0.0, t) / C.ONE_BOOST_AT
         if t < C.ONE_SUPER_AT:
-            return s.max_speed_b
-        return s.max_speed_b + s.super_extra
+            return s.max_speed_b * self._draft()
+        return (s.max_speed_b + s.super_extra) * self._draft()
+
+    def climbing(self):
+        """On the ground going up a ramp / rise: the engine doesn't heat here, so
+        carry your speed in and never fear blowing up on the climb."""
+        return not self.airborne and self.track.slope(self.x, self.lane_index) > C.CLIMB_SLOPE
+
+    def _draft(self):
+        return 1.0 + self.stats.draft_bonus if self.drafting else 1.0
+
+    def _accel_interval(self):
+        """Comeback: double acceleration for a while after remounting."""
+        return self.stats.accel_interval * (0.5 if self.comeback > 0 else 1.0)
+
+    def _red_mult(self):
+        """Heating rate multiplier in the red; Adrenaline slows it after a perfect landing."""
+        return self.stats.red_heat_mult * (0.4 if self.adrenaline > 0 else 1.0)
 
     @property
     def vx(self):
@@ -173,7 +215,7 @@ class Bike:
             x += vx
             vy -= C.GRAVITY
             h += vy
-            if h <= self.track.ground(x):
+            if h <= self.track.ground(x, self.lane_index):
                 return t, x
         return max_ticks, x
 
@@ -183,17 +225,19 @@ class Bike:
         if not self.airborne or self.state != "ride":
             return False
         t, x = self.predicted_landing()
-        if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x) in PITS:
+        if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x, self.lane_index) in PITS:
             return False
-        slope = math.degrees(math.atan(self.track.slope(x)))
-        return abs(self.angle - slope) <= self.stats.land_perfect
+        slope = math.degrees(math.atan(self.track.slope(x, self.lane_index)))
+        # the nose keeps dropping until touchdown: judge the angle it will land at
+        land_angle = max(-85.0, self.angle - self.stats.nose_drop * t)
+        return abs(land_angle - slope) <= self.stats.land_perfect * self.land_mult
 
     def grip(self):
         return self.stats.grip.get(self.track.material_at(self.x), 1.0)
 
     def max_speed(self, turbo):
         m = self.stats.max_speed_b if turbo else self.stats.max_speed_a
-        return m * self.grip()
+        return m * self.grip() * self._draft()
 
     # ------------------------------------------------------------------------
     def step(self, ctl: Controls):
@@ -211,6 +255,12 @@ class Bike:
             self._step_overheat(ev)
             return ev
 
+        if self.adrenaline > 0:
+            self.adrenaline -= 1
+        if self.comeback > 0:
+            self.comeback -= 1
+        if self._kick_cd > 0:
+            self._kick_cd -= 1
         self._lanes(ctl)
         # Throttle grace: briefly after letting go, speed holds instead of coasting
         # down (e.g. while a mouse player re-anchors). Holds at the A cap, so tapping
@@ -228,6 +278,8 @@ class Bike:
             self._grace = max(0, self._grace - 1)
         self._throttle(ctl)
         self._temperature(ctl, ev)
+        if self.state == "ride" and (self.trail or self.heat_aura):
+            self._trail_effects(ev)
         if self.state != "ride":
             return ev
         if self.airborne:
@@ -249,12 +301,24 @@ class Bike:
                 self.lane -= 1
             if ctl.lane_down and self.lane < C.LANES - 1:
                 self.lane += 1
+        old = self.lane_index
         d = self.lane - self.lane_pos
         rate = self.stats.lane_rate
         if abs(d) <= rate:
+            if d and self.stats.lane_kick and not self.airborne and self._kick_cd == 0:
+                # Line Choice: finishing a lane change kicks a little speed past the cap
+                self.speed += self.stats.lane_kick
+                self._kick_cd = C.FPS
             self.lane_pos = float(self.lane)
         else:
             self.lane_pos += math.copysign(rate, d)
+        new = self.lane_index
+        if new != old and self.track.has_split and self.track.ground(self.x, new) > self.h + C.LANE_STEP_MAX:
+            # The lane next door is higher here (the skyway beside a split
+            # bridge's deck): you can drop off it, not climb onto it sideways.
+            self.lane = old
+            self.lane_pos = float(old)
+            self.wobble = max(self.wobble, 8)
 
     def _boost_from(self, ctl):
         """0/1/2 boost level for this tick. One-button mode: from the heat alone."""
@@ -283,13 +347,13 @@ class Bike:
         cap = self.max_speed(turbo) if held else self.max_speed(False) if holding else 0
         if self.boost_level == 2:
             cap += self.stats.super_extra * self.grip()
-        if self.track.surface_at(self.lane_index, self.x) == MUD:
-            cap = min(cap, self.stats.mud_speed) if holding else 0
+        if self.track.surface_at(self.lane_index, self.x) == MUD or self.trail == "mud":
+            cap = min(cap, self._mud_cap()) if holding else 0
             mud = True
         else:
             mud = False
         if held and self.speed < cap and self.wobble == 0:
-            self._accel_acc += self.grip() / self.stats.accel_interval
+            self._accel_acc += self.grip() / self._accel_interval()
             if self._accel_acc >= 1.0:
                 self._accel_acc -= 1.0
                 self.speed = min(cap, self.speed + (2 if turbo else 1))
@@ -304,10 +368,10 @@ class Bike:
         """One-button: speed chases the heat's speed, held or not. Keeping a heat
         level keeps that speed; letting go cools the engine and speed falls with it."""
         cap = self.heat_speed() * self.grip()
-        if self.track.surface_at(self.lane_index, self.x) == MUD:
-            cap = min(cap, self.stats.mud_speed)
+        if self.track.surface_at(self.lane_index, self.x) == MUD or self.trail == "mud":
+            cap = min(cap, self._mud_cap())
         if self.speed < cap and self.wobble == 0:
-            self._accel_acc += self.grip() / self.stats.accel_interval
+            self._accel_acc += self.grip() / self._accel_interval()
             if self._accel_acc >= 1.0:
                 self._accel_acc -= 1.0
                 self.speed = min(cap, self.speed + 2)
@@ -329,8 +393,10 @@ class Bike:
             if ctl.a or ctl.b:
                 return
         hot, cool = self._env()
-        if ctl.b and not self.airborne:
-            self.temp += s.heat_b * hot * (s.red_heat_mult if self.temp >= C.RED_AT else 1.0)
+        if (self.airborne or self.climbing() or self._sand_stall()) and (ctl.a or ctl.b):
+            pass                     # no heat gained in the air or up a ramp (letting go still cools)
+        elif ctl.b:
+            self.temp += s.heat_b * hot * (self._red_mult() if self.temp >= C.RED_AT else 1.0)
         elif ctl.a or ctl.b:
             if self.temp < C.TEMP_STABLE_A:
                 self.temp = min(C.TEMP_STABLE_A, self.temp + s.heat_a * hot)
@@ -355,11 +421,14 @@ class Bike:
             if ctl.a or ctl.b:
                 return
         hot, cool = self._env()
-        if ctl.a or ctl.b:
+        if (self.airborne or self.climbing() or self._sand_stall()) and (ctl.a or ctl.b):
+            pass                     # holding in the air or up a ramp keeps your heat, never adds to it
+        elif ctl.a or ctl.b:
             if self.temp < C.ONE_BOOST_AT:
-                self.temp += s.heat_a * C.ONE_COLD_HEAT_MULT * s.warmup_mult * hot
+                comeback = 2.0 if self.comeback > 0 else 1.0     # Comeback: warm up fast after a crash
+                self.temp += s.heat_a * C.ONE_COLD_HEAT_MULT * s.warmup_mult * hot * comeback
             else:
-                self.temp += s.heat_b * hot * (s.red_heat_mult if self.temp >= C.ONE_SUPER_AT else 1.0)
+                self.temp += s.heat_b * hot * (self._red_mult() if self.temp >= C.ONE_SUPER_AT else 1.0)
         elif self.temp > 0:
             self.temp = max(0.0, self.temp - (s.cool_coast + s.passive_cool) * cool)
         self._check_blowup(ev)
@@ -369,6 +438,51 @@ class Bike:
         if self.temp >= C.TEMP_OVERHEAT and not self._vent(ev, C.ONE_SUPER_AT - C.VENT_DROP):
             self.temp = C.TEMP_OVERHEAT
             self._explode(ev)
+
+    def _mud_cap(self):
+        """Mud speed limit; a weaker (minion) mud trail lets more speed through."""
+        k = self.trail_k if self.trail == "mud" else 1.0
+        return self.stats.mud_speed / max(0.2, k)
+
+    def _sand_stall(self):
+        """A full-strength sandstorm stops heat building (a minion's halves it,
+        every other tick)."""
+        if self.trail != "sand":
+            return False
+        return self.trail_k >= 1.0 or self.ticks % 2 == 0
+
+    def _trail_effects(self, ev):
+        """Boss trails and auras (bosses.py), scaled by strength: oil wobbles you,
+        smoke cools you, fire and Heat Wave heat you, Sandblast drains you (mud and
+        sand act in the throttle / heat code)."""
+        from bosses import TRAIL_HEAT, TRAIL_DRAG_EVERY
+        k = self.trail_k
+        heat = self.heat_aura
+        if self.trail == "oil":
+            self.wobble = max(self.wobble, max(1, round(4 * k)))
+        elif self.trail in TRAIL_HEAT:
+            heat += TRAIL_HEAT[self.trail] * k
+        if heat < 0 and not self.one_button:
+            # classic: cooling would help, so smoke / Sandblast drag your speed instead
+            if self.ticks % max(1, round(TRAIL_DRAG_EVERY * 0.3 / -heat)) == 0:
+                self.speed = max(0.0, self.speed - 1)
+        elif heat:
+            self.external_heat(heat, ev)
+
+    def external_heat(self, amount, ev):
+        """Heat from outside the engine (boss trails, auras, pyro, lava): can blow
+        you up (one-button) or stall you (classic), like riding too hot."""
+        floor = 0.0 if self.one_button else C.TEMP_START
+        self.temp = max(floor, self.temp + amount)
+        if self.state != "ride":
+            return
+        if self.one_button:
+            self._check_blowup(ev)
+        elif self.temp >= C.TEMP_OVERHEAT and not self._vent(ev, C.TEMP_STABLE_A):
+            self.temp = C.TEMP_OVERHEAT
+            self.state = "overheat"
+            self.timer = self.stats.overheat_ticks
+            ev.append(("overheat",))
 
     def _vent(self, ev, to):
         """Radiator upgrade: spend a vent charge to drop the heat instead of blowing."""
@@ -389,7 +503,7 @@ class Bike:
         self.crash_speed = self.speed
         self.speed = 0.0
         self.airborne = False
-        self.h = self.track.ground(self.x)
+        self.h = self.track.ground(self.x, self.lane_index)
         self.vy = 0.0
         self.temp = 0.0
         self.boost_level = 0
@@ -397,8 +511,9 @@ class Bike:
         ev.append(("explode",))
 
     def _ground(self, ctl, ev):
+        self.free_ticks = self.press_ticks = 0
         new_x = self.x + self.vx
-        new_g = self.track.ground(new_x)
+        new_g = self.track.ground(new_x, self.lane_index)
         vy_ground = new_g - self.h
         if self.vx > 0 and vy_ground < self.vy - C.GRAVITY - 0.05:
             # The ground falls away faster than gravity: take off.
@@ -412,7 +527,7 @@ class Bike:
         self.x = new_x
         self.h = new_g
         self.vy = vy_ground
-        target = math.degrees(math.atan(self.track.slope(self.x)))
+        target = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
         if ctl.left and self.speed > 4:
             target += 14          # small wheelie (cosmetic + nose-up)
         self.angle += (target - self.angle) * C.GROUND_ANGLE_LERP
@@ -420,19 +535,48 @@ class Bike:
     def _air(self, ctl, ev):
         s = self.stats
         self.air_ticks += 1
+        if ctl.ramp and ctl.right and not ctl.left:
+            # Mouse button scheme, button held: push the nose down. A tap is a
+            # nudge, a hold winds up to the full pitch rate.
+            self.press_ticks += 1
+            self.free_ticks = 0
+            self.angle -= s.pitch_rate * min(1.0, C.PRESS_START + self.press_ticks * C.PRESS_GROW)
+            return self._air_move(ev)
+        self.press_ticks = 0
         if ctl.left and not ctl.right:
             self.angle += s.pitch_rate
+            self.free_ticks = 0
         elif ctl.right and not ctl.left:
             self.angle -= s.pitch_rate
+            self.free_ticks = 0
+        elif ctl.ramp:
+            # Mouse button scheme, button up: the nose lifts, starting at the
+            # drift rate and speeding up towards the full pitch rate, so a short
+            # release nudges it and a long one swings it up as hard as leaning back.
+            self.free_ticks += 1
+            self.angle += s.nose_drop + s.pitch_rate * min(C.RELEASE_MAX, self.free_ticks * C.RELEASE_GROW)
         else:
+            self.free_ticks = 0
             self.angle -= s.nose_drop
+        self._air_move(ev)
+
+    def _air_move(self, ev):
         self.angle = max(-85.0, min(85.0, self.angle))
         self.x += self.vx
         self.vy -= C.GRAVITY
         self.h += self.vy
-        g = self.track.ground(self.x)
+        g = self.track.ground(self.x, self.lane_index)
+        if self.h > g:
+            # Grace: lined up for a PERFECT just above the ground counts for a few
+            # ticks, so a tiny last-moment twitch doesn't throw it away.
+            slope_deg = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
+            if self.h - g <= C.PERFECT_GRACE_PX and \
+                    abs(self.angle - slope_deg) <= self.stats.land_perfect * self.land_mult:
+                self._perfect_grace = C.PERFECT_GRACE_TICKS
+            elif self._perfect_grace > 0:
+                self._perfect_grace -= 1
         if self.h <= g:
-            if g - self.h > C.WALL_CATCH and self.track.terrain_at(self.x - C.TILE_W * 0.5) in (DECK_GAP, DRAW):
+            if g - self.h > C.WALL_CATCH and self.track.terrain_at(self.x - C.TILE_W * 0.5, self.lane_index) in (DECK_GAP, DRAW):
                 # Came up short of a broken span / open drawbridge: hit the far
                 # wall and drop into the hole.
                 self.x = (int(self.x // C.TILE_W)) * C.TILE_W - 6
@@ -447,29 +591,30 @@ class Bike:
 
     def _over_open_bridge(self):
         col = self.track.col_at(self.x)
-        return self.track.terrain[col] == DRAW and draw_open(self.ticks, col)
+        return self.track.tile(col, self.lane_index) == DRAW and draw_open(self.ticks, col)
 
     def _fall_through(self, ev):
         """Rode (or landed) onto a lifted drawbridge: straight into the hole."""
-        self.h = self.track.ground(self.x) - 40
+        self.h = self.track.ground(self.x, self.lane_index) - 40
         self._crash(ev, "pit")
 
     def _land(self, ev):
         s = self.stats
+        tol, per = s.land_tolerance * self.land_mult, s.land_perfect * self.land_mult   # Hex aura
         self.stats_counters["landings"] += 1
-        here = self.track.terrain_at(self.x)
+        here = self.track.terrain_at(self.x, self.lane_index)
         if here in PITS:
             if self.h < edge_heights(here)[1] - 10:
                 self._crash(ev, "pit")
                 return
             # Caught the far lip: pop up onto the next column.
             self.x = (int(self.x // C.TILE_W) + 1) * C.TILE_W + 1
-            self.h = self.track.ground(self.x)
-        slope_deg = math.degrees(math.atan(self.track.slope(self.x)))
+            self.h = self.track.ground(self.x, self.lane_index)
+        slope_deg = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
         err = self.angle - slope_deg
         if self.air_ticks < C.MICRO_HOP_TICKS:
             # Little hops (whoops, ramp lips): bad angle costs speed, not a crash.
-            if abs(err) > s.land_tolerance:
+            if abs(err) > tol:
                 self.speed *= C.MICRO_HOP_SPEED_KEEP
                 self.wobble = C.ROUGH_WOBBLE_TICKS // 3
                 ev.append(("bounce",))
@@ -477,8 +622,20 @@ class Bike:
             self.vy = 0.0
             self.stats_counters["landings"] -= 1
             return
-        if abs(err) <= s.land_perfect:
+        if abs(err) > tol and not -C.LAND_ROUGH_NOSE <= err <= C.LAND_ROUGH \
+                and self.land_saves_left > 0:
+            # Crumple Zone: this crash landing folds into a rough one
+            self.land_saves_left -= 1
+            err = max(-C.LAND_ROUGH_NOSE, min(C.LAND_ROUGH, err))
+            ev.append(("saved",))
+        if abs(err) <= tol and s.hang_kick:
+            # Hang Time: a clean landing turns airtime into speed past the cap
+            self.speed += min(3 * s.hang_kick, s.hang_kick * self.air_ticks / C.FPS)
+        graced = self._perfect_grace > 0 and abs(err) <= tol
+        self._perfect_grace = 0
+        if abs(err) <= per or graced:
             self.stats_counters["perfect"] += 1
+            self.adrenaline = max(self.adrenaline, s.adrenaline_ticks)
             if s.perfect_heat:
                 # Hype Landing: a heat kick in one-button mode (never past the top),
                 # a cool-down in classic mode.
@@ -487,9 +644,9 @@ class Bike:
                 else:
                     self.temp = max(C.TEMP_START, self.temp - s.perfect_heat)
             ev.append(("perfect",))
-        elif abs(err) <= s.land_tolerance:
+        elif abs(err) <= tol:
             ev.append(("land",))
-        elif 0 < err <= C.LAND_ROUGH:
+        elif -C.LAND_ROUGH_NOSE <= err <= C.LAND_ROUGH:
             self.speed *= 1.0 - (1.0 - C.ROUGH_SPEED_KEEP) * s.rough_loss_mult
             self.wobble = C.ROUGH_WOBBLE_TICKS
             self.stats_counters["rough"] += 1
@@ -534,7 +691,11 @@ class Bike:
             lx = self.x % C.TILE_W
             if 28 <= lx <= 52 and abs(self.lane_pos - self.lane_index) < 0.4:
                 self._last_debris_col = col
-                if self.speed > DEBRIS_SAFE:
+                if self.speed > DEBRIS_SAFE and self.barrier_saves_left > 0:
+                    self.barrier_saves_left -= 1          # Barrier Buster: smash through it
+                    self.speed *= 0.85
+                    ev.append(("smash",))
+                elif self.speed > DEBRIS_SAFE:
                     self._crash(ev, "debris")
                 else:
                     self.speed = 0
@@ -562,7 +723,7 @@ class Bike:
             self.speed *= 0.6
             self.angle = 0
             self.vy = 0
-            self.h = self.track.ground(self.x)
+            self.h = self.track.ground(self.x, self.lane_index)
             self.airborne = False
             ev.append(("forgiven",))
             return
@@ -589,17 +750,49 @@ class Bike:
         elif elapsed < 18 and self.crash_reason != "pit":
             self.x += max(0.0, 2.5 - elapsed * 0.14)   # bike tumbles a bit
         if self.timer <= 0:
-            # Respawn on solid ground: walk out of a pit to the next column.
-            while self.track.terrain_at(self.x) in PITS or self._over_open_bridge():
-                self.x = (int(self.x // C.TILE_W) + 1) * C.TILE_W + 2
-            self.h = self.track.ground(self.x)
+            # Respawn on solid ground with a clear run-up: past any hazard just ahead.
+            self.x = self._safe_respawn_x()
+            self.h = self.track.ground(self.x, self.lane_index)
             self.vy = 0.0
-            self.angle = math.degrees(math.atan(self.track.slope(self.x)))
+            self.angle = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
             self.state = "ride"
             self.wobble = 0
             if self.one_button:
                 self.temp = self.stats.respawn_heat     # Pre-Heater: restart warm
+            self.comeback = self.stats.comeback_ticks
             ev.append(("recovered",))
+
+    def _respawn_hazard(self, col):
+        """Something a rider starting from a standstill can't get past: a pit, a
+        broken span, a drawbridge (open or not), a barrier, water / lava, or a
+        launch ramp straight into a pit (the jump needs speed)."""
+        lane, tr = self.lane_index, self.track
+        n = tr.ncols
+        tile = tr.tile(col % n, lane)
+        if tile in PITS + (DRAW,) or tr.surface[lane][col % n] in (DEBRIS, WATER):
+            return True
+        return tile in RAMPS and any(tr.tile((col + k) % n, lane) in PITS + (DRAW,) for k in (1, 2))
+
+    def _safe_respawn_x(self):
+        """Where to respawn: the crash spot, unless a hazard lies within
+        RESPAWN_CLEAR_COLS tiles ahead (or under it). Then just past that hazard,
+        repeating for hazards that follow, at most RESPAWN_MAX_SKIP tiles on."""
+        start = int(self.x // C.TILE_W)
+        col = start
+        while col - start < C.RESPAWN_MAX_SKIP:
+            ahead = [c for c in range(col, col + C.RESPAWN_CLEAR_COLS + 1)
+                     if self._respawn_hazard(c)]
+            if not ahead:
+                break
+            col = ahead[-1] + 1
+        if col == start:
+            return self.x
+        col = min(col, start + C.RESPAWN_MAX_SKIP)
+        for _ in range(self.track.ncols):    # capped mid-cluster: still never in a hole
+            if not self._respawn_hazard(col):
+                break
+            col += 1
+        return col * C.TILE_W + 2
 
     def _step_overheat(self, ev):
         self.timer -= 1
@@ -615,10 +808,10 @@ class Bike:
 
     def _move_ground(self):
         self.x += self.vx
-        if self.track.terrain_at(self.x) in PITS or self._over_open_bridge():
+        if self.track.terrain_at(self.x, self.lane_index) in PITS or self._over_open_bridge():
             # Rolled into a pit while stalled: hop to the far edge.
             self.x = (int(self.x // C.TILE_W) + 1) * C.TILE_W + 2
-        self.h = self.track.ground(self.x)
+        self.h = self.track.ground(self.x, self.lane_index)
 
 
 DEBRIS_SAFE = C.DEBRIS_SAFE_SPEED

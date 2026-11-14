@@ -12,7 +12,7 @@ import pygame
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config as C  # noqa: E402
-from audio import Audio  # noqa: E402
+from audio import Audio, pre_init as audio_pre_init  # noqa: E402
 from ui.input import InputManager  # noqa: E402
 
 WEB = sys.platform == "emscripten"
@@ -46,6 +46,15 @@ class View:
             self.width = self._width_for(size[0] / size[1])
         self.surface = pygame.Surface((self.width, self.height))
         self.smooth = False
+        # crisp text at window resolution (not in the browser or headless runs)
+        self.hires_text = (not WEB and os.environ.get("SDL_VIDEODRIVER") != "dummy"
+                           and not os.environ.get("HYPE_LOWRES_TEXT"))
+        self._hires_fonts = {}
+        self._sync_text_canvas()
+
+    def _sync_text_canvas(self):
+        from ui import hud
+        hud.set_hires_canvas(self.surface if self.hires_text else None)
 
     def _width_for(self, aspect):
         w = int(round(self.height * max(aspect, 1.0)))
@@ -64,6 +73,7 @@ class View:
             self.width = self._width_for(size[0] / max(1, size[1]))
         if self.width != old:
             self.surface = pygame.Surface((self.width, self.height))
+            self._sync_text_canvas()
             return True
         return False
 
@@ -80,6 +90,28 @@ class View:
         return ((pos[0] - r.x) * self.width / max(1, r.w),
                 (pos[1] - r.y) * self.height / max(1, r.h))
 
+    def _sharp_scale(self, size):
+        """Pixel-art upscale without uneven pixels: nearest-neighbour to the largest
+        whole multiple, then a smooth stretch for the remaining fraction. (A plain
+        nearest scale by e.g. 3.67x makes some pixel columns 3 px wide and others
+        4 px, which reads as jagged text.)"""
+        sw, sh = self.surface.get_size()
+        k = max(1, min(size[0] // sw, size[1] // sh))
+        mid = (sw * k, sh * k)
+        cache = getattr(self, "_scale_cache", None)
+        if cache is None or cache[0].get_size() != mid or cache[1].get_size() != size:
+            cache = (pygame.Surface(mid), pygame.Surface(size))
+            self._scale_cache = cache
+        if k > 1:
+            pygame.transform.scale(self.surface, mid, cache[0])
+            src = cache[0]
+        else:
+            src = self.surface
+        if mid == size:
+            return src
+        pygame.transform.smoothscale(src, size, cache[1])
+        return cache[1]
+
     def present(self):
         if WEB:
             if self.window is not self.surface:
@@ -92,12 +124,39 @@ class View:
             elif self.smooth:
                 self.window.blit(pygame.transform.smoothscale(self.surface, r.size), r)
             else:
-                self.window.blit(pygame.transform.scale(self.surface, r.size), r)
+                self.window.blit(self._sharp_scale(r.size), r)
+            self._draw_hires_text(r)
         pygame.display.flip()
+
+    def _draw_hires_text(self, r):
+        """Queued HUD text (ui.hud.text), drawn smooth at the scaled size, centred on
+        where it sat on the low-res canvas."""
+        from ui import hud
+        k = r.w / self.width
+        prev = self.window.get_clip()
+        for s, lr, size, color, shadow, clip, anchor in hud.take_queued():
+            px = max(1, int(round(size * k)))
+            f = self._hires_fonts.get(px)
+            if f is None:
+                f = self._hires_fonts[px] = pygame.font.Font(None, px)
+            # keep the text's own anchor (left-aligned lines stay flush), vertically centred
+            ax, ay = getattr(lr, anchor)
+            ax, ay = r.x + ax * k, r.y + ay * k
+            horiz = "left" if "left" in anchor else "right" if "right" in anchor else "centerx"
+            cy = r.y + lr.centery * k
+            self.window.set_clip(pygame.Rect(int(r.x + clip.x * k), int(r.y + clip.y * k),
+                                             int(clip.w * k) + 1, int(clip.h * k) + 1))
+            img = f.render(s, True, color)
+            box = img.get_rect(**{horiz: ax, "centery": cy})
+            if shadow:
+                self.window.blit(f.render(s, True, (0, 0, 0)), box.move(round(k), round(k)))
+            self.window.blit(img, box)
+        self.window.set_clip(prev)
 
 
 class App:
     def __init__(self):
+        audio_pre_init()                 # mixer format + buffer must be set before pygame.init()
         pygame.init()
         pygame.display.set_caption(C.TITLE)
         self.view = View()

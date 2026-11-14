@@ -351,10 +351,9 @@ class EditorScene(Scene):
             self.say("This track isn't saved yet", (200, 196, 220))
 
     def cycle_theme(self):
-        from meta.shop import active_themes
-        owned = [t for t in THEMES if t in self.app.profile.themes] or ["valley"]
-        i = owned.index(self.track.theme) if self.track.theme in owned else -1
-        self.track.theme = owned[(i + 1) % len(owned)]
+        names = list(THEMES)
+        i = names.index(self.track.theme) if self.track.theme in names else -1
+        self.track.theme = names[(i + 1) % len(names)]
         self.dirty = True
 
     def leave(self):
@@ -829,6 +828,7 @@ class EditorScene(Scene):
     def _draw_popup(self, surf, W):
         shade = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
         shade.fill((0, 0, 0, 140))
+        hud.flush_queued(surf)             # text under the shade is dimmed with it
         surf.blit(shade, (0, 0))
         if self.popup == "menu":
             items = self.menu_items() + [("Close", None)]

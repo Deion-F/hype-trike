@@ -4,7 +4,13 @@ Race controls (decision Q2): on-screen buttons for throttle (A), turbo (B),
 lean back / lean forward, plus vertical swipes anywhere else for lane changes.
 Menus and the editor consume generic pointer events (down / move / up / tap).
 
-Desktop mouse steering (setting "mouse_steer"): pressing a mouse button drops an
+Desktop mouse, "button" scheme (setting "mouse_steer" = "button", the default):
+the button is throttle on the ground and pulls the nose up in the air; released
+mid-air the nose falls, faster the longer it's free. The cursor only picks
+lanes (hover, below); left/right does nothing, so there is no home point and
+nothing to drift. See button_air.py.
+
+Desktop mouse steering (setting "mouse_steer" = "angle" / "hold"): pressing a mouse button drops an
 anchor (the "home" point) where the cursor is, pinned to the rider's current lane.
 While throttle or turbo is held, the cursor's offset from home steers; the anchor
 never moves on its own, so returning to home always means neutral and the
@@ -50,6 +56,7 @@ import pygame
 
 import config as C
 from bike import Controls
+from button_air import ButtonAir
 from track.tiles import RAMPS
 
 SWIPE_STEP = 26          # logical px of vertical drag per lane change
@@ -118,6 +125,7 @@ class InputManager:
         self._press_ticks = 0
         self._hover_armed = False      # hover lanes: cursor has moved since the race began
         self.cam_lead = 0.0            # camera x minus rider x (set by the race scene)
+        self.button_air = ButtonAir()  # "button" scheme: throttle on the ground, pull-up in the air
         self.layout(view.width)
 
     # -- layout --------------------------------------------------------------
@@ -185,7 +193,11 @@ class InputManager:
             if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and e.button in (1, 3):
                 x, y = self.view.to_logical(e.pos)
                 if e.type == pygame.MOUSEBUTTONDOWN:
-                    if not self._mouse_held:
+                    if self.button_mode:
+                        self.mouse_active = True
+                        if self.race_mode:
+                            self._hover_armed = True
+                    elif not self._mouse_held:
                         if self.sticky_anchor and self.anchor is not None:
                             self._press, self._press_ticks = (x, y), 0   # maybe re-anchor
                         else:
@@ -277,7 +289,12 @@ class InputManager:
     @property
     def mouse_enabled(self):
         """Mouse buttons drive throttle/turbo (desktop, mouse steering on)."""
-        return bool(self.settings.get("mouse_steer", "angle")) and not self.touch_seen
+        return bool(self.settings.get("mouse_steer", "button")) and not self.touch_seen
+
+    @property
+    def button_mode(self):
+        """Mouse "button" scheme: the button pulls up mid-air, the cursor only picks lanes."""
+        return self.mouse_enabled and self.settings.get("mouse_steer", "button") == "button"
 
     @property
     def lean_mode(self):
@@ -289,18 +306,18 @@ class InputManager:
             return False
         tr = bike.track
         ahead = bike.x + RAMP_LEAN_LOOKAHEAD * C.TILE_W
-        return not any(tr.terrain_at(x) in RAMPS for x in (bike.x, ahead))
+        return not any(tr.terrain_at(x, bike.lane_index) in RAMPS for x in (bike.x, ahead))
 
     @property
     def hover_lanes(self):
         """Hover lanes are on and the cursor owns lane choice right now."""
         return (self.mouse_enabled and self.mouse_active and self._hover_armed
-                and self.settings.get("mouse_lanes", "hover") == "hover")
+                and (self.button_mode or self.settings.get("mouse_lanes", "hover") == "hover"))
 
     @property
     def sticky_anchor(self):
         """One-button throttle: home stays put between presses (see module doc)."""
-        return self.mouse_enabled and self.settings.get("throttle_mode") == "one"
+        return self.mouse_enabled and not self.button_mode and self.settings.get("throttle_mode") == "one"
 
     @property
     def anchor_charge(self):
@@ -364,6 +381,7 @@ class InputManager:
         self._press = None
         self._hover_armed = False
         self._reset_air()
+        self.button_air.reset()
 
     def _reset_air(self):
         self.air_base = None
@@ -422,11 +440,30 @@ class InputManager:
 
     def _update_hover_lane(self, bike):
         """Hover lanes: the lane whose drawn band is under the cursor. Bands rise
-        with the ground under the cursor (ramps), never sink into pits."""
+        with the ground under the cursor (ramps), never sink into pits.
+        Only a moving cursor picks a new lane: with the cursor still, the track
+        scrolling or rising under it (ramps, a split bridge's skyway) never
+        steers you, so you stay where you pointed."""
+        if self.mouse_lane is not None and self.mouse_pos == getattr(self, "_hover_seen", None):
+            return
+        self._hover_seen = self.mouse_pos
         mx, my = self.mouse_pos
         wx = bike.x + self.cam_lead + (mx - C.BIKE_SCREEN_X)
-        g = max(0.0, bike.track.ground(wx))
-        f = (my + g - C.LANE_BASE_Y) / C.LANE_SPACING - 0.5    # lane centres at whole numbers
+        tr = bike.track
+        if tr.has_split:
+            # Split bridge: the back lanes sit higher, so find the band under the
+            # cursor lane by lane (front lanes drawn on top win).
+            f = None
+            for lane in reversed(range(C.LANES)):
+                top = C.lane_y(lane) - max(0.0, tr.ground(wx, lane))
+                if top <= my < top + C.LANE_SPACING:
+                    f = float(lane)
+                    break
+            if f is None:
+                f = (my + max(0.0, tr.ground(wx)) - C.LANE_BASE_Y) / C.LANE_SPACING - 0.5
+        else:
+            g = max(0.0, tr.ground(wx))
+            f = (my + g - C.LANE_BASE_Y) / C.LANE_SPACING - 0.5    # lane centres at whole numbers
         f = max(-0.5, min(C.LANES - 0.5, f))
         cur = self.mouse_lane
         if cur is not None and abs(f - cur) < 0.5 + HOVER_HYST / C.LANE_SPACING:
@@ -443,6 +480,8 @@ class InputManager:
             lane_up=self._edge["lane_up"],
             lane_down=self._edge["lane_down"],
         )
+        if self.button_mode:
+            return self._button_controls(c, bike)
         driving = False
         if self.mouse_enabled:
             m = pygame.mouse.get_pressed()
@@ -499,6 +538,26 @@ class InputManager:
                 c.lane_up = True
             elif self.mouse_lane > bike.lane:
                 c.lane_down = True
+        return c
+
+    def _button_controls(self, c, bike):
+        """Mouse "button" scheme (see button_air.py): no anchor, no mouse lean."""
+        m = pygame.mouse.get_pressed()
+        one = self.settings.get("throttle_mode") == "one"
+        # one-button mode has no turbo: either button is the one button
+        self.button_air.apply(c, bool(m[0] or (one and m[2])), bool(m[2] and not one), bike, one)
+        self.mouse_driving = False
+        self.mouse_lean = 0
+        self.lean_locked = False
+        self._reset_air()
+        if self.hover_lanes and bike is not None:
+            self._update_hover_lane(bike)
+            if self.mouse_lane < bike.lane:
+                c.lane_up = True
+            elif self.mouse_lane > bike.lane:
+                c.lane_down = True
+        else:
+            self.mouse_lane = None
         return c
 
     def consume_edges(self):

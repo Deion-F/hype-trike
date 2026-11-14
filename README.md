@@ -1,7 +1,7 @@
 # Hype Trike
 
 An original side-scrolling motocross roguelike for personal use: four lanes,
-ramps, engine heat and landing angles, plus procedural tracks, 6-heat runs,
+ramps, engine heat and landing angles, plus procedural tracks, runs through five biomes (two races and a boss each),
 unlockable vehicles (including the trike) and a track editor with share codes.
 All art and audio are generated in code. See `DECISIONS.md` for every confirmed
 design decision and `PROJECT_SPEC.md` for the original brief.

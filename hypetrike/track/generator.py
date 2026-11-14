@@ -15,7 +15,7 @@ Segments can also build elevated structures from plateau tiles (see
 track.tiles.TERRAIN_CHARS): tabletops, two-tier step-ups, kickers on a mesa,
 rows of steep fins. Every segment starts and ends at ground level.
 
-Raised decks on pillars (overpass, broken bridge, drawbridge) are the most
+Raised decks on pillars (overpass, broken bridge, split bridge) are the most
 complex structures. Complex segments never appear on the first map (depth 0)
 and get likelier every round after that (complex_weight).
 
@@ -25,7 +25,7 @@ vehicles grip better (decision 0.4).
 import random
 
 import config as C
-from track.tiles import (Track, FLAT, START, GAP, DECK_GAP, DECK, DRAW, DECKS, COOLANT, MUD, DEBRIS, WATER, NONE,
+from track.tiles import (Track, FLAT, START, GAP, DECK_GAP, DECK, DRAW, DECKS, SPLIT, SPLIT_DRAW, COOLANT, MUD, DEBRIS, WATER, NONE,
                          DIRT, GRASS, SAND, PAD_S, PAD_L, PADS, TERRAIN_CHARS, edge_heights)
 
 T = TERRAIN_CHARS
@@ -115,9 +115,12 @@ LIBRARY = [
     # over a missing span. Cold and slow (under ~37 speed), you drop in.
     Segment("broken bridge", "..obbbbbKxbbbe....", 4, runway=4, heat_discount=7, min_depth=2,
             complex=True),
-    # Drawbridge (skill: timing): the leaf lifts and lowers on a cycle. Ease off
-    # on the deck so you arrive while it's down; ride onto it lifted and you fall.
-    Segment("drawbridge", "..obbbbbbzbbe....", 4, runway=3, heat_discount=5, min_depth=2,
+    # Split bridge (skill: lane choice, or timing): after the on-ramp the front
+    # two lanes ride the deck over a drawbridge (its leaf lifts and lowers on a
+    # cycle: ride onto it lifted and you fall), while the back two lanes climb
+    # a narrow skyway over it. Pick the back lanes before the split; you can
+    # drop off the skyway onto the deck but not climb up to it.
+    Segment("split bridge", "..oryyyZyne....", 4, runway=3, heat_discount=6, min_depth=2,
             complex=True),
 ]
 
@@ -318,6 +321,9 @@ def _soften(track, col):
             changes += 1
         elif track.terrain[c] in (DECK_GAP, DRAW):     # mend the span / fix the bridge down
             track.terrain[c] = DECK
+            changes += 1
+        elif track.terrain[c] == SPLIT_DRAW:
+            track.terrain[c] = SPLIT
             changes += 1
         for lane in range(C.LANES):
             if track.surface[lane][c] in (DEBRIS, MUD, WATER):

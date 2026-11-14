@@ -5,6 +5,23 @@ import config as C
 from race import fmt_time
 
 _fonts = {}
+# High-res text (desktop): text drawn onto this canvas is queued instead and
+# rendered smooth at the window's real resolution after the canvas is scaled up
+# (main.View.present), so it isn't blocky low-res glyphs stretched 3-4x.
+_hires_canvas = None
+_queued = []
+
+
+def set_hires_canvas(surface):
+    global _hires_canvas
+    _hires_canvas = surface
+    _queued.clear()
+
+
+def take_queued():
+    out = list(_queued)
+    _queued.clear()
+    return out
 
 
 def font(size):
@@ -15,6 +32,13 @@ def font(size):
 
 def text(surf, s, pos, size=20, color=C.HUD_FG, anchor="topleft", shadow=True):
     f = font(size)
+    if surf is _hires_canvas and _hires_canvas is not None:
+        r = pygame.Rect((0, 0), f.size(str(s)))
+        setattr(r, anchor, pos)
+        clip = surf.get_clip()
+        if clip.colliderect(r):
+            _queued.append((str(s), r, size, tuple(color[:3]), shadow, clip, anchor))
+        return r
     img = f.render(str(s), False, color)
     r = img.get_rect(**{anchor: pos})
     if shadow:
@@ -24,7 +48,29 @@ def text(surf, s, pos, size=20, color=C.HUD_FG, anchor="topleft", shadow=True):
     return r
 
 
+def flush_queued(surf, rect=None):
+    """Draw queued high-res text (all, or what overlaps `rect`) into the canvas the
+    old low-res way, before something is drawn on top of it (panels, shades)."""
+    if surf is not _hires_canvas or not _queued:
+        return
+    keep = []
+    for item in _queued:
+        s, r, size, color, shadow, clip, _anchor = item
+        if rect is not None and not r.colliderect(rect):
+            keep.append(item)
+            continue
+        f = font(size)
+        prev = surf.get_clip()
+        surf.set_clip(clip)
+        if shadow:
+            surf.blit(f.render(s, False, (0, 0, 0)), (r.x + 1, r.y + 1))
+        surf.blit(f.render(s, False, color), r)
+        surf.set_clip(prev)
+    _queued[:] = keep
+
+
 def panel(surf, rect, alpha=170, color=C.HUD_BG, radius=6):
+    flush_queued(surf, pygame.Rect(rect))
     s = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
     pygame.draw.rect(s, (*color, alpha), (0, 0, rect[2], rect[3]), border_radius=radius)
     surf.blit(s, (rect[0], rect[1]))
@@ -100,7 +146,7 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=True
     panel(surf, (6, 6, 150, 40))
     lap = min(race.laps_done + 1, race.track.laps)
     text(surf, f"LAP {lap}/{race.track.laps}", (12, 10), 18)
-    text(surf, fmt_time(race.time_ticks), (12, 26), 22, C.ACCENT)
+    text(surf, fmt_time(race.clock), (12, 26), 22, C.ACCENT)
     if race.lap_times:
         panel(surf, (width - 136, 6, 130, 40))
         text(surf, f"LAST {fmt_time(race.lap_times[-1])}", (width - 130, 10), 18)

@@ -68,6 +68,7 @@ class Menu:
 
 
 def button(surf, rect, label, on=False, size=22, enabled=True):
+    hud.flush_queued(surf, pygame.Rect(rect))
     pygame.draw.rect(surf, (78, 70, 110) if on else (46, 42, 66), rect, border_radius=7)
     if on:
         pygame.draw.rect(surf, C.ACCENT, rect, 2, border_radius=7)
@@ -90,7 +91,7 @@ class BackdropScene(Scene):
         demo_vehicle = app.profile.selected.get("vehicle", "dirt")
         self._demo = Race(self._bg_track, base_stats(demo_vehicle), lane=2, countdown=False)
         self._demo_ai = GhostAI(turbo=True, turbo_temp=22)
-        self._demo_liv = app.profile.selected.get("livery", "flame")
+        self._demo_liv = app.profile.player_livery()
         app.audio.music("title")
 
     def on_resize(self):
@@ -115,6 +116,15 @@ class BackdropScene(Scene):
         shade = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
         shade.fill((10, 8, 20, 120))
         surf.blit(shade, (0, 0))
+
+
+def random_biome():
+    """(theme, generator depth) for a quick race or time trial: any biome, on
+    tracks as hard as a normal race in that biome of a run."""
+    import random
+    from run.manager import BIOMES
+    b = random.randrange(len(BIOMES))
+    return BIOMES[b], b
 
 
 class TitleScene(BackdropScene):
@@ -156,11 +166,10 @@ class TitleScene(BackdropScene):
         p = self.app.profile
         sel = p.selected
         seed = random.randrange(1 << 30)
-        depth = random.randint(0, 3)
-        tr = generate(seed, depth, validate_with=base_stats(sel["vehicle"])).track
-        from meta.shop import active_themes
-        tr.theme = random.choice(active_themes(p))
-        self.app.set_scene(RaceScene(self.app, tr, base_stats(sel["vehicle"]), sel["livery"],
+        biome, depth = random_biome()
+        tr = generate(seed, depth, validate_with=self.app.profile.player_stats()).track
+        tr.theme = biome
+        self.app.set_scene(RaceScene(self.app, tr, self.app.profile.player_stats(), self.app.profile.player_livery(),
                                      rivals=3, title=tr.name, seed=seed,
                                      info_lines=[f"Seed {seed}  Depth {depth}"],
                                      context={"kind": "quick", "depth": depth, "vehicle": sel["vehicle"]},
@@ -173,18 +182,17 @@ class TitleScene(BackdropScene):
         from track.validator import validate
         from bike import base_stats
         from run.manager import Target
-        from meta.shop import active_themes
         p = self.app.profile
         sel = p.selected
-        st = base_stats(sel["vehicle"])
+        st = self.app.profile.player_stats()
         seed = random.randrange(1 << 30)
-        depth = random.randint(0, 3)
+        biome, depth = random_biome()
         g = generate(seed, depth, validate_with=st)
         tr = g.track
-        tr.theme = random.choice(active_themes(p))
+        tr.theme = biome
         ghost = validate(tr, st)
         par = int((ghost["ticks"] if ghost["finished"] else g.validation["ticks"]) * TRIAL_PAR_SLACK)
-        self.app.set_scene(RaceScene(self.app, tr, st, sel["livery"], rivals=0,
+        self.app.set_scene(RaceScene(self.app, tr, st, self.app.profile.player_livery(), rivals=0,
                                      title=f"Time Trial: {tr.name}", seed=seed,
                                      target=Target("time", par),
                                      info_lines=[f"Seed {seed}  Depth {depth}"],
@@ -204,8 +212,8 @@ class TitleScene(BackdropScene):
                 p.record_lap(tr.name, min(result["laps"]))
                 p.save()
             self.app.set_scene(TitleScene(self.app))
-        self.app.set_scene(RaceScene(self.app, tr, base_stats(sel["vehicle"]),
-                                     sel["livery"], rivals=rivals, on_done=done,
+        self.app.set_scene(RaceScene(self.app, tr, self.app.profile.player_stats(),
+                                     self.app.profile.player_livery(), rivals=rivals, on_done=done,
                                      title=tr.name,
                                      context={"kind": "exhibition" if rivals else "practice",
                                               "vehicle": sel["vehicle"]}))
@@ -233,7 +241,10 @@ class TitleScene(BackdropScene):
         one = self.app.profile.settings.get("throttle_mode") == "one"
         hint = ("Z hold: heat builds into boost - don't hit the red!  arrows lean/lane" if one
                 else "Z throttle  X turbo  arrows lean/lane")
-        if self.app.input.mouse_enabled:
+        if self.app.input.button_mode:
+            hint = ("Mouse: hold to heat, point at a lane - in the air hold to lean forward, let go to lift"
+                    if one else "Mouse: L throttle  R turbo, point at a lane - in the air hold to lean forward")
+        elif self.app.input.mouse_enabled:
             hover = self.app.profile.settings.get("mouse_lanes", "hover") == "hover"
             if hover:
                 hint = ("Mouse: hold/tap to heat, point at a lane to ride it, back/fwd of home leans"
@@ -254,7 +265,8 @@ SETTING_ROWS = [
     ("swap_sides", "Throttle side", [(False, "Right"), (True, "Left")]),
     ("touch_ui", "Touch buttons", [("auto", "Auto"), ("on", "Always"), ("off", "Hidden")]),
     ("throttle_mode", "Throttle", [("classic", "Throttle + boost"), ("one", "One button")]),
-    ("mouse_steer", "Mouse lean", [("angle", "Aim angle"), ("hold", "Hold lean"), (False, "Off")]),
+    ("mouse_steer", "Mouse controls", [("button", "Click to lean fwd"), ("angle", "Aim angle"),
+                                       ("hold", "Hold lean"), (False, "Off")]),
     ("heat_gauge", "Heat gauge", [("both", "Rider + bar"), ("bike", "On rider"), ("bar", "Bottom bar")]),
     ("mouse_wheelie", "Mouse wheelie", [("ramps", "Ramps only"), ("anywhere", "Anywhere")]),
     ("mouse_lanes", "Mouse lanes", [("hover", "Follow cursor"), ("drag", "Drag from home")]),

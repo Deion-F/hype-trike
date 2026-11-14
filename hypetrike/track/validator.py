@@ -9,7 +9,7 @@ import random
 
 import config as C
 from bike import Bike, Controls, base_stats
-from track.tiles import MUD, DEBRIS, WATER, PADS, PITS, DRAW, draw_open
+from track.tiles import MUD, DEBRIS, WATER, PADS, PITS, DRAW, SPLITS, HIGH_LANES, draw_open
 
 
 class GhostAI:
@@ -41,8 +41,12 @@ class GhostAI:
                 spread = (1.0 - self.skill) * 22.0
                 self._jump_error = self.rng.uniform(-spread, spread * 0.6)
                 if self.rng.random() < self.blunder:
-                    # botched jump: way off, nose-down (crash) or nose-high (rough/loop)
-                    self._jump_error = self.rng.choice((-1, 1)) * self.rng.uniform(16, 34)
+                    # botched jump: nose-down past the rough band (crash), or
+                    # nose-high (rough/loop)
+                    if self.rng.random() < 0.5:
+                        self._jump_error = -self.rng.uniform(C.LAND_ROUGH_NOSE + 2, C.LAND_ROUGH_NOSE + 10)
+                    else:
+                        self._jump_error = self.rng.uniform(16, 34)
             self._was_air = True
             self._steer_air(bike, c)
             return c
@@ -62,7 +66,7 @@ class GhostAI:
         col0 = tr.col_at(bike.x)
         for k in range(0, 15):
             col = (col0 + k) % tr.ncols
-            if tr.terrain[col] != DRAW:
+            if tr.tile(col, bike.lane_index) != DRAW:
                 continue
             if col != self._bridge_col:
                 self._bridge_col = col
@@ -105,10 +109,11 @@ class GhostAI:
 
     def _steer_air(self, bike, c):
         t, land_x = predict_landing(bike)
-        if bike.track.terrain_at(land_x) in PITS:
+        lane = bike.lane_index
+        if bike.track.terrain_at(land_x, lane) in PITS:
             base = 0.0            # heading for a pit: level out and hope
         else:
-            base = math.degrees(math.atan(bike.track.slope(land_x)))
+            base = math.degrees(math.atan(bike.track.slope(land_x, lane)))
         target = max(-35.0, min(35.0, base)) + self._jump_error
         desired_now = target + bike.stats.nose_drop * t
         err = bike.angle - desired_now
@@ -126,9 +131,18 @@ class GhostAI:
             return
         tr = bike.track
         look = [bike.x + i * C.TILE_W * 0.5 for i in range(0, 5)]
+        # A lane change takes ~1/lane_rate ticks; it can't climb onto higher ground.
+        reach = [bike.x + k * bike.vx for k in range(0, int(1.0 / bike.stats.lane_rate) + 2, 2)]
+        split_ahead = tr.has_split and any(
+            tr.terrain[tr.col_at(bike.x + i * C.TILE_W)] in SPLITS for i in range(0, 4))
 
         def lane_cost(lane):
+            if tr.has_split and any(tr.ground(x, lane) > tr.ground(x, bike.lane) + C.LANE_STEP_MAX
+                                    for x in reach):
+                return 1e9
             cost = 0.0
+            if split_ahead and lane >= HIGH_LANES:
+                cost += 6          # split bridge ahead: take the skyway over the drawbridge
             for i, x in enumerate(look):
                 s = tr.surface[lane][tr.col_at(x)]
                 if s == DEBRIS:
@@ -163,11 +177,12 @@ def predict_landing(bike, max_ticks=240):
     x, h, vy = bike.x, bike.h, bike.vy
     vx = bike.vx
     tr = bike.track
+    lane = bike.lane_index
     for t in range(1, max_ticks):
         x += vx
         vy -= C.GRAVITY
         h += vy
-        if h <= tr.ground(x):
+        if h <= tr.ground(x, lane):
             return t, x
     return max_ticks, x
 

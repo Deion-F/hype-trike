@@ -38,5 +38,7 @@ def test_archive_moves_recordings_out_of_the_live_folder(tmp_path):
 
 def test_sim_run_plays_every_heat():
     out = tuning.sim_run(1000, "good", "one")
-    assert [h["heat"] for h in out] == list(range(6))
+    from run.manager import RUN_HEATS
+    assert [h["heat"] for h in out] == list(range(RUN_HEATS))
+    assert len(tuning.TARGET_CURVE) == RUN_HEATS
     assert out[0]["met"]                      # a good player clears the first heat

@@ -1,21 +1,60 @@
-"""Run state (spec §6.1): heat sequence, targets, upgrades, permadeath, payout.
+"""Run state (spec §6.1): biomes, races, targets, upgrades, permadeath, payout.
 
-Decisions: 6 heats (Q6), pick 1 of 3 random upgrades (Q7), crashes only cost
-time (Q9). Failing a heat target ends the run. Runs are never saved mid-run.
+A run is a tour of the five biomes, easiest to hardest (BIOMES). Each biome is
+two normal races and a boss race: win the boss to move on to the next biome,
+and pick an elite upgrade (a stronger tier) on the way. Normal races offer 1 of
+3 regular upgrades (Q7). Crashes only cost time (Q9). Missing a race's target
+ends the run. Runs are never saved mid-run.
 """
 import random
 
 import config as C
 from bike import base_stats
 from race import fmt_time
+from meta.bike_tune import apply_tune
+from meta.kit import apply_kit
 from run.upgrades import apply_upgrades, offer
 from track.generator import generate
 
-RUN_HEATS = 6
+# Biome order, easiest first. Only the Volcano has its own physics (hot air:
+# heat rises faster, cools slower; puddles are lava pits), so it closes the
+# run. The others differ in how readable they are (bright Valley and Desert,
+# dark Night, busy Stadium) and, through the generator depth below, in which
+# structures they get: Valley's normal races have no complex structures (its
+# boss brings the first step-ups, fins and overpasses), Night adds the broken
+# bridge, drawbridge and twin peaks, Stadium the summit, stair kicker and mesa
+# canyon, and the Volcano boss rides the deepest tracks.
+BIOMES = ("valley", "desert", "night", "stadium", "lava")
+RACES_PER_BIOME = 3                      # two normal races, then the boss
+RUN_HEATS = len(BIOMES) * RACES_PER_BIOME
 
-# Rival level (race.rival_setup, 0..1) per heat. Eases in, then steepens: the
-# three-map target ladder (top 3, top 2, win) needs the mid-run heats to bite.
-RIVAL_LEVELS = [0.0, 0.15, 0.32, 0.68, 0.92, 1.0]
+# Rival level (race.rival_setup, 0..1) at each generator depth. A biome's
+# normal races ride its own depth, the boss rides the next one up.
+DEPTH_RIVAL_LEVELS = [0.0, 0.15, 0.32, 0.68, 0.92, 1.0]
+# How far the second normal race sits between the biome's level and the boss's.
+SECOND_RACE_STEP = 0.3
+
+
+def biome_of(i):
+    return i // RACES_PER_BIOME
+
+
+def is_boss(i):
+    return i % RACES_PER_BIOME == RACES_PER_BIOME - 1
+
+
+def depth_for(i):
+    """Generator depth (structures, length, ground materials) for race i."""
+    return biome_of(i) + (1 if is_boss(i) else 0)
+
+
+def _rival_level(i):
+    b, k = biome_of(i), i % RACES_PER_BIOME
+    lo, hi = DEPTH_RIVAL_LEVELS[b], DEPTH_RIVAL_LEVELS[b + 1]
+    return (lo, lo + (hi - lo) * SECOND_RACE_STEP, hi)[k]
+
+
+RIVAL_LEVELS = [_rival_level(i) for i in range(RUN_HEATS)]
 
 MODIFIERS = {
     "no_coolant": ("No Coolant", "No coolant pads on this track"),
@@ -24,8 +63,9 @@ MODIFIERS = {
     "sticky": ("Mud Season", "Mud everywhere: half the lanes are boggy"),
 }
 
-# Heats (0-based) that carry a modifier, earliest first.
-MODIFIER_HEATS = (2, 4)
+# Races (0-based) that carry a modifier, earliest first: the second normal
+# race of Night and of Stadium (bosses are hard enough already).
+MODIFIER_HEATS = (7, 10)
 
 # How hard each modifier makes a heat, 0 (barely matters) .. 1 (the hardest).
 # Measured, not guessed: the difficulty tuner sets these from
@@ -96,6 +136,9 @@ class Target:
 class Heat:
     def __init__(self, index, seed, target, rivals, rival_level):
         self.index = index
+        self.biome = BIOMES[biome_of(index)]
+        self.boss = is_boss(index)
+        self.depth = depth_for(index)
         self.seed = seed
         self.target = target
         self.rivals = rivals
@@ -104,15 +147,17 @@ class Heat:
 
 
 class RunState:
-    def __init__(self, seed=None, vehicle="dirt", livery="flame", start_upgrades=(), themes=None,
-                 mode="one"):
+    def __init__(self, seed=None, vehicle="dirt", livery="flame", start_upgrades=(), mode="one",
+                 kit_levels=None, bike_levels=None):
         self.seed = seed if seed is not None else random.randrange(1 << 30)
         self.rng = random.Random(self.seed)
         self.vehicle = vehicle
         self.livery = livery
         self.mode = mode               # throttle mode the run was started in ("one" | "classic")
         self.upgrades = list(start_upgrades)
-        self.themes = list(themes) if themes else None
+        self.kit_levels = dict(kit_levels or {})   # Starter Kit (meta/kit.py), every heat
+        # bike tuning for this vehicle (meta/bike_tune.py); None = full stats (sims, tests)
+        self.bike_levels = dict(bike_levels) if bike_levels is not None else None
         self.heat_i = 0
         self.status = "active"         # active | won | lost
         self.results = []
@@ -126,26 +171,23 @@ class RunState:
     # -- planning -----------------------------------------------------------------
     def _plan_heat(self, i):
         seed = (self.seed * 31 + i * 7_919) & 0x3FFFFFFF
-        last = i == RUN_HEATS - 1
-        # Every heat is a race against rivals (solo clock runs live in Time
-        # Trial). Heats 3 and 5 add a track modifier on top.
-        if last:
+        # Every race is against rivals (solo clock runs live in Time Trial).
+        # Bosses must be won; the early biomes only ask for a podium.
+        if is_boss(i):
             target = Target("place", 1)
         elif i in MODIFIER_HEATS:
             target = Target("place", 2, pick_modifier(self.rng, i))
         else:
-            target = Target("place", 3 if i < 2 else 2)
-        rivals = 3
-        # Rivals start beatable and get faster and cleaner every round.
-        # TODO (TO_DO.md): try higher-tier upgrades pushing this up faster.
-        return Heat(i, seed, target, rivals, rival_level=RIVAL_LEVELS[i])
+            target = Target("place", 3 if biome_of(i) < 2 else 2)
+        return Heat(i, seed, target, rivals=3, rival_level=RIVAL_LEVELS[i])
 
     @property
     def heat(self):
         return self.heats[self.heat_i]
 
     def base_vehicle_stats(self):
-        return base_stats(self.vehicle)
+        """The vehicle at its tuning levels with the Starter Kit fitted (before run upgrades)."""
+        return apply_kit(apply_tune(base_stats(self.vehicle), self.bike_levels), self.kit_levels)
 
     def stats_for_heat(self, heat=None):
         heat = heat or self.heat
@@ -169,19 +211,18 @@ class RunState:
         if h.target.modifier in ("no_coolant", "sticky"):
             mods.append(h.target.modifier)
         st = self.stats_for_heat(h)
-        g = generate(h.seed, depth=h.index, modifiers=tuple(mods),
+        g = generate(h.seed, depth=h.depth, modifiers=tuple(mods),
                      validate_with=[self.base_vehicle_stats()])
         h.track = g.track
-        if self.themes:
-            h.track.theme = self.themes[h.index % len(self.themes)]
-        if h.index == RUN_HEATS - 1:
-            h.track.theme = C.LAVA_THEME        # the final heat is always the volcano
+        h.track.theme = h.biome
+        if h.boss:
+            h.track.name = "Boss: " + h.track.name
         if h.target.kind in ("time", "survive"):
             # Par from the ghost's time with the player's current setup.
             from track.validator import validate
             ghost = validate(h.track, st)
             base = ghost["ticks"] if ghost["finished"] else g.validation["ticks"]
-            slack = 1.22 - h.index * 0.025
+            slack = 1.22 - h.depth * 0.025
             if h.target.kind == "survive":
                 slack += 0.25
             h.target.value = int(base * slack)
@@ -206,8 +247,20 @@ class RunState:
         elif self.heat_i == RUN_HEATS - 1:
             self.status = "won"
         else:
-            self.pending_offer = offer(self.rng, self.upgrades, 3, self.mode)
+            self.pending_offer = self.offer_after(h.index)
         return met
+
+    def offer_after(self, i):
+        """The upgrade pick after clearing race i: elite after a boss."""
+        tier = "elite" if is_boss(i) else "normal"
+        return offer(self.rng, self.upgrades, 3, self.mode, tier=tier)
+
+    @property
+    def biome_i(self):
+        return biome_of(self.heat_i)
+
+    def biomes_cleared(self):
+        return sum(1 for r in self.results if r["met"] and is_boss(r["heat"]))
 
     def choose(self, upgrade_id):
         self.upgrades.append(upgrade_id)
@@ -219,12 +272,21 @@ class RunState:
 
     def payout(self):
         """Meta-currency for this run (spec §6.3): distance, heats, perfects."""
-        mult = apply_upgrades(self.base_vehicle_stats(), self.upgrades).currency_mult
+        s = apply_upgrades(self.base_vehicle_stats(), self.upgrades)
+        mult = s.currency_mult
+        won = [r for r in self.results if r["met"] and r.get("position") == 1]
+        prizes = s.prize_coins * len(won) + s.boss_bounty * sum(1 for r in won if is_boss(r["heat"]))
         parts = {
             "distance": int(self.distance_cols / 8),
-            "heats": sum(20 + 8 * r["heat"] for r in self.results if r["met"]),
+            "heats": sum(race_coins(r["heat"]) for r in self.results if r["met"]) + prizes,
             "perfect": self.perfect + self.bonus_coins,
-            "victory": 60 if self.status == "won" else 0,
+            "victory": 100 if self.status == "won" else 0,
         }
         total = int(sum(parts.values()) * mult)
         return total, parts, mult
+
+
+def race_coins(i):
+    """Coins for clearing race i: bosses pay most, later biomes more."""
+    b = biome_of(i)
+    return 20 + 8 * b if is_boss(i) else 6 + 3 * b

@@ -1,5 +1,7 @@
 """Scene base class and the race scene (shared by quick race, run heats and
 editor playtest)."""
+import math
+
 import pygame
 
 import config as C
@@ -30,18 +32,19 @@ class RaceScene(Scene):
 
     def __init__(self, app, track, stats, livery="flame", rivals=0, on_done=None,
                  title="", info_lines=None, rival_level=0.5, seed=0,
-                 target=None, context=None, replay=None):
+                 target=None, context=None, replay=None, boss=None):
         """context: what this race is, for the recording (run heat, quick race...).
         replay: a recording dict to play back instead of reading input."""
         super().__init__(app)
         self.track = track
         self.stats = stats
         self.livery = livery
+        self.boost_theme = app.profile.selected.get("boost", "flame")
         self.on_done = on_done
         self.title = title
         self.info_lines = info_lines or []
         self.target = target
-        self.race = Race(track, stats, rivals=rivals, rival_level=rival_level, seed=seed)
+        self.race = Race(track, stats, rivals=rivals, rival_level=rival_level, seed=seed, boss=boss)
         self.replay = replay
         if replay is not None:
             import replay as rp
@@ -76,6 +79,8 @@ class RaceScene(Scene):
         self.bg_scroll = 0.0        # backdrop parallax position (runs ahead while boosting)
         self.tilt = (0, 0, 1)       # (direction, level, max level) for the lean arrow
         self._air_prev = {}         # id(bike) -> (airborne, vy) last tick, for landing dust
+        self._cam_offset = 0.0      # camera lag after a respawn jump (eases back to 0)
+        self._prev_bx = None
         app.audio.music(None)
 
     def on_resize(self):
@@ -138,6 +143,9 @@ class RaceScene(Scene):
         sx, sy = self.renderer.bike_screen_pos(b, b.x)
         for e in ev:
             k = e[0]
+            if k == "boss":
+                self._boss_popup(e[1], sx, sy)
+                continue
             if k in ("perfect", "land", "rough"):
                 # Every real landing (not micro-hops): home moves to the cursor, so
                 # the air lean the hand was holding becomes the new neutral.
@@ -206,7 +214,11 @@ class RaceScene(Scene):
         self.fx_super += max(-C.FX_EASE, min(C.FX_EASE, ts - self.fx_super))
         self.bg_scroll += b.vx * (1 + C.FX_BG_BOOST * self.fx_boost + C.FX_BG_SUPER * self.fx_super)
         if boosting and self.ticks % (2 if b.boost_level == 2 else 3) == 0:
-            self.renderer.emit_boost_sparks(b, b.x)
+            self.renderer.emit_boost_sparks(b, b.x, self.boost_theme)
+        if self.race.started and self.ticks % 4 == 0:
+            for rb in self.race.rivals:             # rivals show their boost too
+                if rb.state == "ride" and rb.boost_level > 0 and abs(rb.x - b.x) < self.app.view.width:
+                    self.renderer.emit_boost_sparks(rb, b.x)
         if b.state == "ride" and b.boost_level == 2:
             # super boost: smoke, thicker as the heat nears the explosion
             danger = (b.temp - C.ONE_SUPER_AT) / (C.TEMP_OVERHEAT - C.ONE_SUPER_AT)
@@ -241,10 +253,60 @@ class RaceScene(Scene):
             return ((255, 255, 255) if (self.ticks // 10) % 2 else C.ACCENT, 2)
         return None
 
+    @property
+    def _boss_info(self):
+        from bosses import BOSSES
+        return BOSSES[self.race.boss]
+
+    BOSS_POPUPS = {
+        "bomb": ("MUD BOMB INCOMING!", (200, 150, 90)), "quake": ("QUAKE!", (200, 150, 90)),
+        "devil": ("DUST DEVIL!", (236, 206, 140)), "shoved": ("SHOVED!", (236, 206, 140)),
+        "blackout": ("LIGHTS OUT...", (190, 140, 255)),
+        "pyro": ("PYRO CANNONS!", (255, 170, 60)), "scorched": ("SCORCHED +HEAT", (255, 120, 40)),
+        "crowd_boss": ("CROWD GOES WILD", (255, 215, 60)), "crowd_you": ("STOLE THE CROWD! +SPEED", C.GOOD),
+        "eruption": ("ERUPTION!", (255, 110, 30)), "lava": ("LAVA! +SPEED +HEAT", (255, 130, 40)),
+    }
+
+    def _boss_popup(self, kind, sx, sy):
+        text, col = self.BOSS_POPUPS.get(kind, (kind.upper(), C.ACCENT))
+        if kind in ("bomb", "devil", "blackout", "pyro", "eruption", "crowd_boss"):
+            self.popups.add(text, col, self.app.view.width // 2, 118, 60)        # the boss acts
+        else:
+            self.popups.add(text, col, sx, sy - 44, 45)                        # it got you
+        self.app.audio.event("rough" if kind in ("shoved", "quake", "scorched") else "heatpad"
+                             if kind in ("lava", "crowd_you") else "beep")
+
+    def _draw_blackout(self, surf, rd, b, cam):
+        """Phantom's Blackout: the screen goes dark except a headlight round you."""
+        k = self.race.brain.dark(self.race.time_ticks)
+        if k <= 0:
+            return
+        W, H = surf.get_size()
+        shade = pygame.Surface((W, H), pygame.SRCALPHA)
+        shade.fill((4, 2, 12, int(235 * k)))
+        sx, sy = rd.bike_screen_pos(b, cam)
+        for r, a in ((95, 0.75), (70, 0.45), (48, 0.15)):          # soft-edged headlight
+            pygame.draw.circle(shade, (4, 2, 12, int(235 * k * a)), (int(sx + 40), int(sy - 10)), r)
+        surf.blit(shade, (0, 0))
+
+    def _boss_glow(self):
+        """Pulsing outline in the boss's colour, so you always know who to beat."""
+        g = self._boss_info["glow"]
+        k = 0.65 + 0.35 * (1 + math.sin(self.ticks * 0.15)) / 2
+        return (tuple(int(c * k) for c in g), 2)
+
+    def _draw_boss_tag(self, surf, rd, b, cam):
+        sx, sy = rd.bike_screen_pos(b, cam)
+        x, y = int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 10)
+        g = self._boss_info["glow"]
+        pygame.draw.polygon(surf, g, [(x - 6, y - 14), (x - 6, y - 19), (x - 3, y - 16), (x, y - 20),
+                                      (x + 3, y - 16), (x + 6, y - 19), (x + 6, y - 14)])     # crown
+        hud.text(surf, self._boss_info["name"], (x, y - 6), 15, g, anchor="center")
+
     def _draw_you(self, surf, rd, b, cam):
         """'YOU' tag with a little arrow over the player's helmet at the start."""
         sx, sy = rd.bike_screen_pos(b, cam)
-        x, y = int(sx + C.HEAT_ARC_DX), int(sy - 62 - (self.ticks // 8) % 2)
+        x, y = int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 6 - (self.ticks // 8) % 2)
         hud.text(surf, "YOU", (x, y - 8), 16, C.ACCENT, anchor="center")
         pygame.draw.polygon(surf, (20, 18, 30), [(x - 6, y - 1), (x + 6, y - 1), (x, y + 6)])
         pygame.draw.polygon(surf, C.ACCENT, [(x - 4, y), (x + 4, y), (x, y + 4)])
@@ -267,7 +329,7 @@ class RaceScene(Scene):
         self.result = {
             "finished": r.finished and not self.forfeit,
             "forfeit": self.forfeit,
-            "time": r.time_ticks,
+            "time": r.clock,
             "laps": list(r.lap_times),
             "position": r.position(),
             "field": len(r.rivals) + 1,
@@ -326,14 +388,29 @@ class RaceScene(Scene):
         # screen, more road shows ahead) and shakes a touch in super boost.
         lead = C.FX_CAM_LEAD * self.fx_boost + C.FX_CAM_LEAD_SUPER * self.fx_super
         shake = C.FX_SHAKE * self.fx_super * (((self.ticks * 7919) % 5) / 2 - 1)
-        cam = b.x + lead + shake
+        # A respawn can move the bike ahead in one tick (out of a pit, past the
+        # hazard): keep the camera where it was and scroll over, instead of cutting.
+        if self._prev_bx is not None and abs(b.x - self._prev_bx) > C.CAM_JUMP_PX:
+            self._cam_offset -= b.x - self._prev_bx
+        self._prev_bx = b.x
+        self._cam_offset *= C.CAM_SCROLL_EASE
+        if abs(self._cam_offset) < 0.5:
+            self._cam_offset = 0.0
+        cam = b.x + lead + shake + self._cam_offset
         rd = self.renderer
         rd.draw_backdrop(surf, cam, self.bg_scroll)
         rd.draw_track(surf, self.track, cam, ticks=self.race.time_ticks)
-        from ui.art import LIVERIES
-        pool = [k for k in LIVERIES if k != self.livery]
+        from ui.art import LIVERIES, bike_paint
+        pool = [k for k in LIVERIES if k != bike_paint(self.livery)]
         bikes = [(rb, pool[i % len(pool)], False)
                  for i, rb in enumerate(self.race.rivals)]
+        boss_bike = None
+        if self.race.boss is not None:
+            from ui.art import boss_key, minion_key
+            boss_bike = self.race.rivals[self.race.boss_i]
+            bikes = [(rb, boss_key(self.race.boss) if rb is boss_bike else minion_key(self.race.boss), False)
+                     for rb in self.race.rivals]
+        rd.draw_boss_trail(surf, self.race, cam, self.ticks)
         bikes.append((b, self.livery, True))
         marked = self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS
         # depth by lane; while the start marker shows, the player is drawn on top
@@ -343,20 +420,28 @@ class RaceScene(Scene):
             if bk.speed > 0 and bk.state == "ride":
                 period = max(2, int(10 - bk.speed / 6))
                 frame = (bk.ticks // period) % 2
-            if me and bk.one_button and bk.state == "ride":
-                rd.draw_heat_flame(surf, bk, cam, self.ticks)
+            pal = self.boost_theme if me else (self._boss_info["boost"] if boss_bike else "flame")
+            if bk.one_button and bk.state == "ride":
+                # everyone's exhaust flame is their heat gauge (rivals included)
+                rd.draw_heat_flame(surf, bk, cam, self.ticks, pal)
             elif me and self.boost_k > 0 and bk.state == "ride":
-                rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
-            rd.draw_bike(surf, bk, cam, liv, frame, me, self._outline(bk) if me else None)
+                rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2, pal)
+            outline = self._outline(bk) if me else (self._boss_glow() if bk is boss_bike else None)
+            rd.draw_bike(surf, bk, cam, liv, frame, me, outline)
+            if bk is boss_bike and bk.state in ("ride", "done"):
+                self._draw_boss_tag(surf, rd, bk, cam)
             if me and (self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS) \
                     and bk.state == "ride":
                 self._draw_you(surf, rd, bk, cam)
             if me and not self.paused and self.result is None:
                 rd.draw_tilt_arrow(surf, bk, cam, *self.tilt)
-            if me and self.app.profile.settings.get("heat_gauge", "both") != "bar":
+            if not me or self.app.profile.settings.get("heat_gauge", "both") != "bar":
                 rd.draw_heat_arc(surf, bk, cam, self.ticks)
+        rd.draw_boss_aura(surf, self.race, cam, self.ticks)
+        if self.race.brain is not None:
+            self._draw_blackout(surf, rd, b, cam)
         if self.boost_k > 0 and b.state == "ride":
-            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl == 2)
+            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl == 2, self.boost_theme)
         rd.particles.draw(surf, cam)
         rd.draw_speed_lines(surf, self.ticks, self.fx_boost * 0.7 + self.fx_super * 0.3,
                             self.fx_super > 0.5)

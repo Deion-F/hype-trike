@@ -216,7 +216,7 @@ simple run HUD.
     lighter/faster but hotter).
   - **Starting upgrades** (begin a run with one upgrade already active).
   - **Cosmetic liveries** (palette swaps for the bike).
-  - **Track theme packs** (visual variations: desert, night, stadium).
+  - ~~Track theme packs~~ (dropped 2026-11-13: biomes are the stages of a run instead, see DECISIONS.md).
 - Meta-progression must **never make the game trivial**; it should widen options
   rather than simply inflate power.
 

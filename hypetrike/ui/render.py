@@ -7,8 +7,12 @@ import pygame
 import config as C
 from track.tiles import (PROFILES, GAP, START, COOLANT, MUD, DEBRIS, WATER, PAD_BARS,
                          DIRT, GRASS, SAND, PIT_DEPTH, DECKS, DECK_UP, DECK, DECK_DOWN,
-                         DECK_KICK, DECK_GAP, DRAW, DECK_H, draw_lift)
+                         DECK_KICK, DECK_GAP, DRAW, DECK_H, draw_lift, SPLITS, SPLIT_DRAW,
+                         SKY_UP, SKY_DOWN, SKY_H, HIGH_LANES, _sample)
 from ui import art
+
+BACK_LANES = tuple(range(HIGH_LANES))           # split bridge: the skyway lanes
+FRONT_LANES = tuple(range(HIGH_LANES, C.LANES))  # ... and the deck lanes below
 
 FRONT_BOTTOM = 342
 
@@ -75,7 +79,7 @@ class Particles:
 
 class WorldRenderer:
     def __init__(self, width, theme="valley"):
-        self.sprites = art.SpriteCache()
+        self.sprites = art.SpriteCache(C.SPRITE_SCALE, C.SPRITE_SMOOTH)
         self.width = width
         self.particles = Particles()
         self.set_theme(theme, width)
@@ -129,6 +133,8 @@ class WorldRenderer:
             surf.blit(img, (sx0, self.COL_TOP))
             if track.terrain[col] == DRAW:
                 self._draw_leaf(surf, sx0, draw_lift(ticks, col), ticks)
+            elif track.terrain[col] == SPLIT_DRAW:
+                self._draw_leaf(surf, sx0, draw_lift(ticks, col), ticks, lanes=FRONT_LANES)
 
     def _render_column(self, track, col):
         tmp = pygame.Surface((C.TILE_W + 2, FRONT_BOTTOM + 2), pygame.SRCALPHA)
@@ -139,6 +145,9 @@ class WorldRenderer:
         th = self.theme
         t = track.terrain[col]
         base = self.mat_col.get(track.material[col], th["dirt"])
+        if t in SPLITS:
+            self._draw_split_column(surf, track, col, sx0, base)
+            return
         if t in DECKS:
             self._draw_deck_column(surf, track, col, sx0, base)
             return
@@ -208,8 +217,11 @@ class WorldRenderer:
         yf = C.lane_y(C.LANES)
         surf.fill(_shade(th["wall"], 1.0), (a, yf, b - a + 1, FRONT_BOTTOM - yf))
 
-    def _deck_surface(self, surf, sx0, prof, x_from=0, x_to=C.TILE_W):
-        """Plank lanes following `prof` between x_from and x_to; returns nothing."""
+    def _deck_surface(self, surf, sx0, prof, x_from=0, x_to=C.TILE_W, lanes=None):
+        """Plank lanes following `prof` between x_from and x_to; returns nothing.
+        lanes: which lanes the deck spans (default all; split bridges use halves)."""
+        lanes = lanes or range(C.LANES)
+        back, front = lanes[0], lanes[-1] + 1
         plank = self.PLANK
         for (x0, h0), (x1, h1) in zip(prof, prof[1:]):
             x0c, x1c = max(x0, x_from), min(x1, x_to)
@@ -221,7 +233,7 @@ class WorldRenderer:
             a, b = sx0 + x0c, sx0 + x1c
             slope = (h1 - h0) / (x1 - x0)
             k = 1.0 + max(-0.3, min(0.25, slope * 0.35))
-            for lane in range(C.LANES):
+            for lane in lanes:
                 ya, yb = C.lane_y(lane), C.lane_y(lane + 1)
                 lk = k * (0.95 if lane % 2 else 1.0)
                 pygame.draw.polygon(surf, _shade(plank, lk),
@@ -229,11 +241,11 @@ class WorldRenderer:
             # plank seams across the deck (every 8 px)
             for px in range((x0c + 7) // 8 * 8, x1c, 8):
                 hp = h0 + (h1 - h0) * (px - x0) / (x1 - x0)
-                pygame.draw.line(surf, _shade(plank, 0.78), (sx0 + px, C.lane_y(0) - hp),
-                                 (sx0 + px, C.lane_y(C.LANES) - hp))
+                pygame.draw.line(surf, _shade(plank, 0.78), (sx0 + px, C.lane_y(back) - hp),
+                                 (sx0 + px, C.lane_y(front) - hp))
             # back rail and front deck edge (a dark beam)
-            pygame.draw.line(surf, self.RAIL, (a, C.lane_y(0) - ha - 1), (b, C.lane_y(0) - hb - 1), 2)
-            yf = C.lane_y(C.LANES)
+            pygame.draw.line(surf, self.RAIL, (a, C.lane_y(back) - ha - 1), (b, C.lane_y(back) - hb - 1), 2)
+            yf = C.lane_y(front)
             pygame.draw.polygon(surf, self.BEAM, [(a, yf - ha), (b, yf - hb), (b, yf - hb + 6), (a, yf - ha + 6)])
             pygame.draw.line(surf, _shade(self.BEAM, 1.4), (a, yf - ha), (b, yf - hb))
 
@@ -324,23 +336,74 @@ class WorldRenderer:
                 surf.fill((250, 210, 40) if lane % 2 else (30, 30, 30), (sx0 + C.TILE_W - 3, y - 2, 3, 4))
         self._draw_surfaces(surf, track, col, sx0)
 
-    def _draw_leaf(self, surf, sx0, lift, ticks):
-        """Drawbridge leaf hinged at its far end; `lift` 0 (down) .. 1 (up, ~70 deg)."""
+    def _draw_split_column(self, surf, track, col, sx0, base):
+        """Split bridge: the back lanes ride a narrow skyway on tall legs, the
+        front lanes the deck (or the drawbridge) below it. Back to front: the
+        ground or pit, the skyway's legs and strip, then the lower deck."""
+        t = track.terrain[col]
+        lower, upper = SPLITS[t]
+        yf_up = C.lane_y(HIGH_LANES)              # skyway front edge (ground line)
+        if lower == DRAW:
+            self._draw_pit(surf, sx0, False, False)
+        else:
+            self._ground_strip(surf, sx0, base, shade=0.5)
+        uprof = PROFILES[upper]
+        # skyway legs: tall timber posts from the strip's front edge to the ground
+        for lx in (6, 46):
+            h = _sample(uprof, lx)
+            y_top = yf_up - h + 6
+            surf.fill(_shade(self.BEAM, 0.75), (sx0 + lx, y_top, 3, yf_up - y_top))
+        if upper == SKY_UP:
+            # a timber wedge from deck height up to the strip
+            pts = [(sx0 + x, yf_up - h) for x, h in uprof] + [(sx0 + C.TILE_W, yf_up - DECK_H),
+                                                              (sx0, yf_up - DECK_H)]
+            pygame.draw.polygon(surf, _shade(self.BEAM, 1.1), pts)
+        elif upper == SKY_DOWN:
+            pts = [(sx0 + 16, yf_up - SKY_H), (sx0 + C.TILE_W, yf_up - DECK_H), (sx0 + 16, yf_up - DECK_H)]
+            pygame.draw.polygon(surf, _shade(self.BEAM, 1.1), pts)
+        self._deck_surface(surf, sx0, uprof, lanes=BACK_LANES)
+        # yellow edge markers along the strip's open front edge
+        for x in range(4, C.TILE_W, 16):
+            h = _sample(uprof, x)
+            surf.fill((250, 210, 40), (sx0 + x, yf_up - h - 2, 6, 2))
+        # the lower deck (front lanes)
+        if lower == DRAW:
+            self._trestle(surf, sx0 + 2, DECK_H + 4)
+            self._trestle(surf, sx0 + C.TILE_W - 6, DECK_H + 4)
+        else:
+            self._bracing(surf, sx0 + 2, sx0 + 38, DECK_H)
+            self._bracing(surf, sx0 + 42, sx0 + 78, DECK_H)
+            for lx in (2, 40):
+                self._trestle(surf, sx0 + lx, DECK_H)
+            self._deck_surface(surf, sx0, PROFILES[DECK], lanes=FRONT_LANES)
+            nxt = track.tile((col + 1) % track.ncols, C.LANES - 1)
+            if nxt in (DECK_GAP, DRAW):
+                for lane in FRONT_LANES + (C.LANES,):
+                    y = C.lane_y(lane) - DECK_H
+                    surf.fill((250, 210, 40) if lane % 2 else (30, 30, 30), (sx0 + C.TILE_W - 3, y - 2, 3, 4))
+        self._draw_surfaces(surf, track, col, sx0)
+
+    def _draw_leaf(self, surf, sx0, lift, ticks, lanes=None):
+        """Drawbridge leaf hinged at its far end; `lift` 0 (down) .. 1 (up, ~70 deg).
+        lanes: the lanes it spans (default all)."""
+        lanes = lanes or range(C.LANES)
+        back, front = lanes[0], lanes[-1] + 1
         ang = math.radians(70 * lift)
         L = C.TILE_W - 4
         hx = sx0 + C.TILE_W - 2                  # hinge x
         dx, dh = L * math.cos(ang), L * math.sin(ang)
         plank = self.PLANK
-        for lane in range(C.LANES):
+        for lane in lanes:
             ya, yb = C.lane_y(lane) - DECK_H, C.lane_y(lane + 1) - DECK_H
             lk = (0.95 if lane % 2 else 1.0) * (1.0 - 0.25 * lift)
             pygame.draw.polygon(surf, _shade(plank, lk),
                                 [(hx - dx, ya - dh), (hx, ya), (hx, yb), (hx - dx, yb - dh)])
-        yf = C.lane_y(C.LANES) - DECK_H
+        yf = C.lane_y(front) - DECK_H
         pygame.draw.polygon(surf, self.BEAM, [(hx - dx, yf - dh), (hx, yf), (hx, yf + 6), (hx - dx, yf - dh + 6)])
-        pygame.draw.line(surf, self.RAIL, (hx - dx, C.lane_y(0) - DECK_H - dh - 1), (hx, C.lane_y(0) - DECK_H - 1), 2)
+        pygame.draw.line(surf, self.RAIL, (hx - dx, C.lane_y(back) - DECK_H - dh - 1),
+                         (hx, C.lane_y(back) - DECK_H - 1), 2)
         # signal post on the near pier: red while lifting/up (blinks), green when down
-        px, py = sx0 + 1, C.lane_y(0) - DECK_H - 26
+        px, py = sx0 + 1, C.lane_y(back) - DECK_H - 26
         surf.fill(self.RAIL, (px, py, 3, 26))
         if lift > 0.02:
             on = (ticks // 8) % 2 == 0 or lift >= 1.0
@@ -393,7 +456,7 @@ class WorldRenderer:
             if s < 0:
                 continue
             y0 = C.lane_y(lane)
-            h = track._h[col * C.TILE_W + 40]
+            h = track.ground(col * C.TILE_W + 40, lane)
             cy = y0 + C.LANE_SPACING // 2 - h
             if s == MUD:
                 pygame.draw.ellipse(surf, (88, 58, 40), (sx0 + 8, cy - 6, 64, 13))
@@ -462,7 +525,7 @@ class WorldRenderer:
         sx, sy = self.bike_screen_pos(bike, cam_x)
         if sx < -60 or sx > self.width + 60:
             return
-        ground_y = C.lane_y(bike.lane_pos) + C.LANE_SPACING // 2 + 2 - bike.track.ground(bike.x)
+        ground_y = C.lane_y(bike.lane_pos) + C.LANE_SPACING // 2 + 2 - bike.track.ground(bike.x, bike.lane_index)
         if bike.airborne:
             w = max(8, 30 - int((sy - ground_y) * -0.2))
             pygame.draw.ellipse(surf, (0, 0, 0, 0) if False else _shade(self.mat_col[DIRT], 0.55),
@@ -477,16 +540,108 @@ class WorldRenderer:
             img, a = self.sprites.rotated_outlined(vehicle, livery, frame, angle, *outline)
         else:
             img, a = self.sprites.rotated(vehicle, livery, frame, angle)
-        art.blit_rotated(surf, img, a, (sx, sy))
+        art.blit_rotated(surf, img, a, (sx, sy), self.sprites.scale)
         if bike.state == "overheat" and (bike.ticks // 8) % 2 == 0:
             for i in range(3):
-                pygame.draw.circle(surf, (235, 235, 240), (int(sx + 6 + i * 5), int(sy - 26 - i * 5)), 3 + i)
+                pygame.draw.circle(surf, (235, 235, 240), (int(sx + 6 + i * 5), int(sy - 20 - i * 5)), 3 + i)
+
+    def draw_boss_trail(self, surf, race, cam_x, t):
+        """Boss + minion trails and the boss's hazards on the track (under the bikes)."""
+        if race.brain is None:
+            return
+        now = race.time_ticks
+        for trail in race.trails:
+            self._draw_trail(surf, race, trail, cam_x, t, now)
+        for hz in race.brain.hazards:
+            self._draw_hazard(surf, race, hz, cam_x, t, now)
+
+    def _trail_y(self, race, x, lane):
+        return C.lane_y(lane) + C.LANE_SPACING // 2 - race.track.ground(x, lane)
+
+    def _draw_trail(self, surf, race, trail, cam_x, t, now):
+        small = trail.k < 1.0                                   # a minion's: smaller and fainter
+        sz = 0.65 if small else 1.0
+        for i, (x, lane, born) in enumerate(trail.points):
+            sx = C.BIKE_SCREEN_X + (x - cam_x)
+            if sx < -20 or sx > self.width + 20:
+                continue
+            k = max(0.0, 1.0 - (now - born) / trail.life)       # 1 fresh .. 0 gone
+            y = self._trail_y(race, x, lane)
+            j = (i * 7919) % 5 - 2
+            kind = trail.kind
+            if kind == "mud":
+                pygame.draw.ellipse(surf, (90, 62, 38), (sx - 6 * sz, y - 3 + j * 0.4, 12 * sz, 5 * sz))
+                pygame.draw.ellipse(surf, (120, 86, 52), (sx - 3 * sz, y - 2, 5 * sz, 2))
+            elif kind == "sand":
+                r = max(1, int((3 + 5 * (1 - k)) * sz))
+                pygame.draw.circle(surf, (226, 196, 140), (int(sx), int(y - 4 - (1 - k) * 8 + j)), r)
+            elif kind == "oil":
+                pygame.draw.ellipse(surf, (18, 14, 26), (sx - 7 * sz, y - 3, 14 * sz, 5 * sz))
+                pygame.draw.line(surf, (150, 90, 230) if i % 2 else (60, 180, 200), (sx - 3, y - 2), (sx + 2, y - 2))
+            elif kind == "smoke":
+                g = int(150 + 60 * (1 - k))
+                pygame.draw.circle(surf, (g, g, g + 8), (int(sx), int(y - 6 - (1 - k) * 14 + j)),
+                                   max(1, int((3 + 6 * (1 - k)) * sz)))
+            elif kind == "fire":
+                h = (4 + 9 * k) * sz * (1.0 + 0.3 * (((t + i * 3) % 4) / 3))
+                pygame.draw.polygon(surf, (230, 60, 20), [(sx - 5 * sz, y), (sx, y - h), (sx + 5 * sz, y)])
+                pygame.draw.polygon(surf, (255, 190, 50), [(sx - 2, y), (sx, y - h * 0.55), (sx + 2, y)])
+
+    HAZARD_COL = {"mud": (150, 110, 60), "devil": (236, 206, 140), "pyro": (255, 120, 40), "lava": (255, 80, 20)}
+
+    def _draw_hazard(self, surf, race, hz, cam_x, t, now):
+        sx = C.BIKE_SCREEN_X + (hz.x - cam_x)
+        if sx < -60 or sx > self.width + 60:
+            return
+        y = self._trail_y(race, hz.x, hz.lane)
+        col = self.HAZARD_COL[hz.kind]
+        if not hz.live(now):
+            # warning: a blinking marker on the lane (and a shadow / crack where it lands)
+            if (now - hz.start) // 6 % 2 == 0:
+                pygame.draw.polygon(surf, col, [(sx - 10, y - 2), (sx, y - 9), (sx + 10, y - 2), (sx, y + 4)], 2)
+            if hz.kind == "mud":
+                r = 4 + 10 * (now - hz.start) / max(1, hz.warn)
+                pygame.draw.ellipse(surf, (40, 30, 24), (sx - r, y - r / 3, 2 * r, 2 * r / 3))
+            elif hz.kind == "lava":
+                pygame.draw.line(surf, (255, 120, 30), (sx - 12, y), (sx + 12, y - 1), 2)
+            return
+        if hz.kind == "mud":
+            pygame.draw.ellipse(surf, (88, 60, 36), (sx - 38, y - 6, 76, 12))
+            pygame.draw.ellipse(surf, (118, 84, 52), (sx - 24, y - 4, 40, 6))
+        elif hz.kind == "devil":
+            for k in range(5):                                       # a spinning funnel of sand
+                a = t * 0.5 + k * 1.3
+                w = 4 + k * 3
+                pygame.draw.ellipse(surf, (226, 196, 140) if k % 2 else (190, 160, 110),
+                                    (sx - w + math.sin(a) * 3, y - 6 - k * 6, 2 * w, 5), 2)
+        elif hz.kind == "pyro" and not hz.used:
+            h = 30 + 10 * ((t * 7) % 3)
+            pygame.draw.polygon(surf, (240, 60, 20), [(sx - 8, y), (sx, y - h), (sx + 8, y)])
+            pygame.draw.polygon(surf, (255, 210, 80), [(sx - 4, y), (sx, y - h * 0.6), (sx + 4, y)])
+        elif hz.kind == "lava" and not hz.used:
+            pygame.draw.ellipse(surf, art.LAVA_DARK, (sx - 34, y - 6, 68, 12))
+            pygame.draw.ellipse(surf, art.LAVA, (sx - 26, y - 4, 52, 8))
+            bub = (t // 5) % 3
+            pygame.draw.circle(surf, art.LAVA_HOT, (int(sx - 10 + bub * 10), int(y - 6 - bub * 2)), 3)
+
+    def draw_boss_aura(self, surf, race, cam_x, t):
+        """A ring round the boss while the player is inside its aura (Hex, Heat Wave,
+        Sandblast), drawn over the bikes."""
+        brain = race.brain
+        if brain is None or not brain.aura_on:
+            return
+        from bosses import BOSSES
+        boss = race.rivals[race.boss_i]
+        sx, sy = self.bike_screen_pos(boss, cam_x)
+        g = BOSSES[race.boss]["glow"]
+        r = 26 + 3 * math.sin(t * 0.2)
+        pygame.draw.ellipse(surf, g, (sx - r * 1.4, sy - r * 0.5 - 8, r * 2.8, r), 2)
 
     def _draw_explosion(self, surf, bike, sx, sy, livery, vehicle):
         """Fireball, rider launched sky-high, then a new bike parachutes in."""
         T = bike.crash_total
         e = T - bike.timer
-        liv = art.LIVERIES[livery]
+        liv = art.livery(livery)
         # fireball (first ~0.5 s), then a smouldering scorch mark
         if e < 30:
             k = e / 30
@@ -517,7 +672,7 @@ class WorldRenderer:
                 k = (e - d0) / (d1 - d0)
                 y = sy - 230 * (1 - k)
                 sway = math.sin(e * 0.15) * 5
-                art.blit_rotated(surf, img, 0, (sx + sway, y))
+                art.blit_rotated(surf, img, 0, (sx + sway, y), self.sprites.scale)
                 cx, cy = sx + sway, y - 46
                 pygame.draw.line(surf, (230, 230, 240), (cx - 14, cy + 2), (sx + sway - 12, y - 18), 1)
                 pygame.draw.line(surf, (230, 230, 240), (cx + 14, cy + 2), (sx + sway + 12, y - 18), 1)
@@ -528,7 +683,7 @@ class WorldRenderer:
                 pygame.draw.line(surf, (150, 40, 40), (cx - 18, cy + 2), (cx + 18, cy + 2), 2)
             else:
                 bounce = max(0.0, 6 * math.sin(min(math.pi, (e - d1) * 0.35)))
-                art.blit_rotated(surf, img, 0, (sx, sy - bounce))
+                art.blit_rotated(surf, img, 0, (sx, sy - bounce), self.sprites.scale)
 
     def _draw_crash(self, surf, bike, sx, sy, livery, vehicle):
         if bike.crash_reason == "explode":
@@ -536,17 +691,17 @@ class WorldRenderer:
             return
         T = bike.crash_total
         e = T - bike.timer
-        liv = art.LIVERIES[livery]
+        liv = art.livery(livery)
         if bike.crash_reason == "pit":
             # bike vanished into the pit; rider climbs out and runs back
             img, a = self.sprites.rotated(vehicle, livery, 0, 0, rider=False)
             if e > T * 0.5:
-                art.blit_rotated(surf, img, 0, (sx, sy - 4))
+                art.blit_rotated(surf, img, 0, (sx, sy - 4), self.sprites.scale)
         else:
             tumble = min(e, 18)
             ang = -tumble * 22 if e < 18 else 160
             img, a = self.sprites.rotated(vehicle, livery, 0, ang, rider=False)
-            art.blit_rotated(surf, img, a, (sx, sy - (8 if e >= 18 else 4)))
+            art.blit_rotated(surf, img, a, (sx, sy - (6 if e >= 18 else 3)), self.sprites.scale)
         p1, p2 = 0.35 * T, 0.55 * T
         dist = 30 + min(70, bike.crash_speed * 1.6) if hasattr(bike, "crash_speed") else 60
         if e < p1:
@@ -574,28 +729,31 @@ class WorldRenderer:
         sx, sy = self.bike_screen_pos(bike, cam_x)
         a = math.radians(bike.angle)
         ex, ey = self.EXHAUST.get(bike.stats.vehicle, self.EXHAUST_DEFAULT)
-        dx, dy = ex - art.CONTACT[0], ey - art.CONTACT[1]
+        k = self.sprites.scale
+        dx, dy = (ex - art.CONTACT[0]) * k, (ey - art.CONTACT[1]) * k
         px = sx + dx * math.cos(a) + dy * math.sin(a)
         py = sy - dx * math.sin(a) + dy * math.cos(a)
         return px, py, (-math.cos(a), math.sin(a))
 
-    def draw_boost_flame(self, surf, bike, cam_x, t, k=1.0, super_boost=False):
+    def draw_boost_flame(self, surf, bike, cam_x, t, k=1.0, super_boost=False, palette="flame"):
         """Flickering exhaust flame behind the bike (drawn before the sprite). k = 0..1 fade.
         Super boost: a longer flame with a hot blue-white core."""
         px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
         nx, ny = -by, bx                       # perpendicular
         flick = (t * 7919) % 5
-        layers = ((24 + flick * 2, 9, (255, 100, 30)), (16 + flick, 6, (255, 200, 60)),
-                  (8 + flick // 2, 3, (255, 250, 220)))
+        pal = art.boost_palette(palette)
+        o, m, c = pal["boost"][1]
+        layers = ((24 + flick * 2, 9, o), (16 + flick, 6, m), (8 + flick // 2, 3, c))
         if super_boost:
-            layers = ((26 + flick * 3, 11, (240, 60, 40)), (18 + flick * 2, 7, (255, 170, 50)),
-                      (12 + flick, 4, (150, 220, 255)), (6, 2, (255, 255, 255)))
+            ro, rm, rc = pal["red"][1]
+            layers = ((26 + flick * 3, 11, ro), (18 + flick * 2, 7, rm),
+                      (12 + flick, 4, rc), (6, 2, (255, 255, 255)))
         for length, width, col in layers:
             L, w = length * k, width * (0.5 + 0.5 * k) / 2
             pts = [(px + nx * w, py + ny * w), (px + bx * L, py + by * L), (px - nx * w, py - ny * w)]
             pygame.draw.polygon(surf, col, pts)
 
-    def draw_heat_flame(self, surf, bike, cam_x, t):
+    def draw_heat_flame(self, surf, bike, cam_x, t, palette="flame"):
         """One-button mode: the exhaust flame is the heat gauge. It grows with heat
         and shifts from yellow-orange (cold) through orange (boost) to deep red
         (super / about to blow), flickering harder in the red window."""
@@ -609,15 +767,13 @@ class WorldRenderer:
         # Colour steps at the band edges so "boosting or not" reads at a glance:
         # (outer, mid, core) at the start and end of each band, blended within it.
         T = bike.temp
-        if T < C.ONE_BOOST_AT:          # cold: small yellow flame
-            k, a, b = T / C.ONE_BOOST_AT, ((255, 215, 70), (255, 240, 150), (255, 255, 235)), \
-                ((255, 185, 50), (255, 230, 120), (255, 255, 230))
-        elif not red:                    # boost band: orange, deepening
-            k = (T - C.ONE_BOOST_AT) / (C.ONE_SUPER_AT - C.ONE_BOOST_AT)
-            a, b = ((255, 130, 25), (255, 205, 70), (255, 250, 210)), \
-                ((240, 70, 20), (255, 150, 40), (255, 225, 160))
-        else:                            # red window: deep red
-            k, a, b = 1.0, ((200, 15, 15),) * 3, ((200, 15, 15), (255, 60, 30), (255, 170, 120))
+        pal = art.boost_palette(palette)
+        if T < C.ONE_BOOST_AT:          # cold: a small pale flame
+            k, (a, b) = T / C.ONE_BOOST_AT, pal["cold"]
+        elif not red:                    # boost band: deepening
+            k, (a, b) = (T - C.ONE_BOOST_AT) / (C.ONE_SUPER_AT - C.ONE_BOOST_AT), pal["boost"]
+        else:                            # red window: the scheme's most intense colour
+            k, (a, b) = 1.0, pal["red"]
         cols = [tuple(int(a[j][i] + (b[j][i] - a[j][i]) * k) for i in range(3)) for j in range(3)]
         layers = ((4 + 36 * h + flick * 1.5, 3 + 9 * h, cols[0]),
                   (3 + 25 * h + flick, 2 + 6 * h, cols[1]),
@@ -628,7 +784,7 @@ class WorldRenderer:
                    (px - nx * w, py - ny * w)]
             pygame.draw.polygon(surf, col, pts)
 
-    def draw_boost_wind(self, surf, bike, cam_x, t, k=1.0, hot=False):
+    def draw_boost_wind(self, surf, bike, cam_x, t, k=1.0, hot=False, palette="flame"):
         """Speed streaks rushing past the rider (drawn over the bikes).
         hot: super boost, about to blow - the streaks burn orange-red."""
         sx, sy = self.bike_screen_pos(bike, cam_x)
@@ -642,14 +798,15 @@ class WorldRenderer:
             a = int((170 + (i % 2) * 70) * k)
             th = 1 + (i % 3 == 0)
             pygame.draw.line(layer, (40, 30, 60, a // 2), (x, y + th), (x + ln, y + th), 1)
-            col = ((255, 70, 35) if i % 2 else (255, 150, 50)) if hot else (255, 255, 255)
+            streak = art.boost_palette(palette)["streak"]
+            col = (streak[0] if i % 2 else streak[1]) if hot else (255, 255, 255)
             pygame.draw.line(layer, (*col, a), (x, y), (x + ln, y), th)
         surf.blit(layer, (sx - w + 70, sy - h + 6))
 
-    def emit_boost_sparks(self, bike, cam_x):
+    def emit_boost_sparks(self, bike, cam_x, palette="flame"):
         px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
         wx = bike.x + (px - (C.BIKE_SCREEN_X + bike.x - cam_x))
-        for col in ((255, 200, 70), (255, 130, 40)):
+        for col in art.boost_palette(palette)["sparks"]:
             self.particles.emit(wx + bx * 6, py + by * 6, bx * self._rng.uniform(1, 2.5) - bike.vx * 0.2,
                                 by * 2 + self._rng.uniform(-0.6, 0.3), self._rng.randint(6, 12), col)
 
@@ -709,12 +866,12 @@ class WorldRenderer:
             return
         sx, sy = self.bike_screen_pos(bike, cam_x)
         a = math.radians(bike.angle)
-        ox, oy = 0, -18                                   # pivot: middle of the bike
+        ox, oy = 0, -18 * self.sprites.scale              # pivot: middle of the bike
         cx = sx + ox * math.cos(a) + oy * math.sin(a)
         cy = sy - ox * math.sin(a) + oy * math.cos(a)
         t = level / max_level if max_level > 1 else 0.55
         span = math.radians(28 + 46 * t)
-        R = 29
+        R = 29 * self.sprites.scale
         pale, vivid = self.TILT_COL[direction]
         col = tuple(int(pale[i] + (vivid[i] - pale[i]) * t) for i in range(3))
         w = 2 if t < 0.5 else 3

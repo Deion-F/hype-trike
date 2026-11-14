@@ -3,9 +3,12 @@
   python tools/tuning.py summary            one line per live recording
   python tools/tuning.py report [--json]    aggregate difficulty report (by run heat / depth)
   python tools/tuning.py show ID            timeline of one recording (ID prefix is enough)
-  python tools/tuning.py sim [--seeds N] [--mode one|classic|both]
+  python tools/tuning.py sim [--seeds N] [--mode one|classic|both] [--controls button|keys]
                                             simulated runs with AI players of several skill
                                             tiers -> target-met rate per heat (the curve)
+  python tools/tuning.py landsim [--seeds N] [--mode one|classic]
+                                            landing outcomes (perfect / clean / rough / crash
+                                            per jump) for each control scheme and skill tier
   python tools/tuning.py mods [--json]      how hard each modifier (disadvantage) made the
                                             recorded heats vs unmodified heats nearby
   python tools/tuning.py modsim [--seeds N] [--mode one|classic]
@@ -40,12 +43,31 @@ import replay as rp  # noqa: E402
 # target, for an average player who keeps improving and picks upgrades. Early
 # heats should be comfortable, the final a real fight. Used to flag heats in
 # the report and the sim; tune the game toward it, not the other way round.
-TARGET_CURVE = [0.95, 0.88, 0.78, 0.68, 0.58, 0.45]
+# Per generator depth (old 6-heat run), then spread over the 15 biome races
+# the same way run.manager spreads rival levels: a biome's first race at its
+# own depth's goal, the boss at the next depth's.
+DEPTH_CURVE = [0.95, 0.88, 0.78, 0.68, 0.58, 0.45]
+
+
+def _curve():
+    from run.manager import RUN_HEATS, RACES_PER_BIOME, SECOND_RACE_STEP, biome_of
+    out = []
+    for i in range(RUN_HEATS):
+        lo, hi = DEPTH_CURVE[biome_of(i)], DEPTH_CURVE[biome_of(i) + 1]
+        out.append(round((lo, lo + (hi - lo) * SECOND_RACE_STEP, hi)[i % RACES_PER_BIOME], 2))
+    return out
+
+
+TARGET_CURVE = _curve()
 CURVE_SLACK = 0.12
 
 
 def secs(ticks):
     return f"{ticks / C.FPS:.1f}s" if ticks is not None else "-"
+
+
+def _avg(xs):
+    return round(sum(xs) / len(xs), 1) if xs else None
 
 
 def group_key(d):
@@ -87,7 +109,12 @@ def cmd_show(args):
     print("context:", json.dumps(d.get("context")))
     print("track:", d["track"].get("n"), d["track"].get("t"), "meta", json.dumps(d["track"].get("meta")))
     print("race:", {k: v for k, v in d["race"].items() if k != "stats"})
-    print("summary:", json.dumps(d.get("summary"), indent=1))
+    summ = d.get("summary") or {}
+    print("summary:", json.dumps({k: v for k, v in summ.items() if k != "rivals"}, indent=1))
+    print("player kit:", json.dumps((d.get("context") or {}).get("kit") or {}))
+    for i, r in enumerate(summ.get("rivals", []), 1):
+        print(f"  cpu{i}: finish {secs(r.get('finish'))}  crashes {r.get('crashes', 0)}  "
+              f"kit {json.dumps(r.get('kit', {}))}  stats {json.dumps(r.get('stats', {}))}")
     print("\nevents (t, who 0=player, kind, column/segment, extra):")
     for t, who, kind, col, *extra in d["events"]:
         if who and not args.rivals and kind not in ("crash", "explode", "finish"):
@@ -145,6 +172,13 @@ def aggregate(items):
             "rival_crashes_per_race": round(sum(sum(r.get("crashes", 0) + r.get("explodes", 0)
                                                     for r in s.get("rivals", [])) for s in S) / n, 2),
             "upgrades": round(sum(len(d.get("context", {}).get("upgrades") or []) for d in ds) / n, 1),
+            # Starter Kit levels: the player's (run context) vs each rival's (summary)
+            "player_kit_levels": round(sum(sum((d.get("context", {}).get("kit") or {}).values())
+                                           for d in ds) / n, 1),
+            "rival_kit_levels": _avg([sum((r.get("kit") or {}).values()) for s in S for r in s.get("rivals", [])
+                                      if "kit" in r]),
+            "rival_top_speed": _avg([r["stats"]["max_speed_b"] for s in S for r in s.get("rivals", [])
+                                     if r.get("stats")]),
             "quits": sum(1 for s in S if s.get("forfeit")),
         })
     return rows, crash_segs
@@ -203,12 +237,91 @@ class OneButtonPilot:
         return c
 
 
-def sim_run(seed, tier, mode, learning=False):
+class ButtonPilot:
+    """Plays the mouse "button" scheme (button_air.py, the default) on top of
+    another pilot: on the ground its throttle is the button. Mid-air it aims for
+    the GhostAI's landing angle (slope + that jump's skill error) the way a
+    player would with one button: it feathers the button (held = nose down,
+    up = nose lifts) to keep the nose on the target angle, looking ahead with
+    the wind-up of each. After
+    switching it can't switch back for a reaction time that shrinks with skill.
+    Whatever the button was doing up the ramp carries on for one reaction time
+    after take-off (held = already leaning forward)."""
+
+    def __init__(self, pilot, skill=1.0):
+        from button_air import ButtonAir
+        self.pilot, self.air = pilot, ButtonAir()
+        self.ghost = getattr(pilot, "ai", pilot)
+        self.react = round(3 + 9 * (1.0 - skill))       # ticks between button switches
+        self._was_air, self._held, self._lock = False, False, 0
+        self._ground_held = False
+
+    @staticmethod
+    def _end_angle(bike, hold, t):
+        """Nose angle after t ticks: button held for `hold` ticks, then let go
+        (same pitch rules as Bike._air with Controls.ramp)."""
+        s = bike.stats
+        a, press, free = bike.angle, bike.press_ticks, bike.free_ticks
+        for k in range(t):
+            if k < hold:
+                press += 1
+                free = 0
+                a -= s.pitch_rate * min(1.0, C.PRESS_START + press * C.PRESS_GROW)
+            else:
+                press = 0
+                free += 1
+                a += s.nose_drop + s.pitch_rate * min(C.RELEASE_MAX, free * C.RELEASE_GROW)
+            a = max(-85.0, min(85.0, a))
+        return a
+
+    def _air_held(self, bike):
+        import math
+        from track.tiles import PITS
+        from track.validator import predict_landing
+        if self._lock > 0:
+            self._lock -= 1
+            return self._held
+        t, land_x = predict_landing(bike)
+        lane = bike.lane_index
+        base = 0.0 if bike.track.terrain_at(land_x, lane) in PITS else \
+            math.degrees(math.atan(bike.track.slope(land_x, lane)))
+        target = max(-35.0, min(35.0, base)) + getattr(self.ghost, "_jump_error", 0.0)
+        # Feather the button to keep the nose on the target angle: look one
+        # reaction time ahead in the current state and switch if it would cross.
+        look = min(t, self.react)
+        ahead = self._end_angle(bike, look if self._held else 0, look)
+        want = (ahead > target) if not self._held else (ahead >= target)
+        if want != self._held:
+            self._held, self._lock = want, self.react
+        return self._held
+
+    def controls(self, bike):
+        c = self.pilot.controls(bike)
+        air = bike.airborne and bike.state == "ride"
+        if air:
+            if not self._was_air:
+                self._held, self._lock = self._ground_held, self.react
+            held = self._air_held(bike)
+            held_a, held_b = held, False
+        else:
+            held_a, held_b = c.a, c.b
+            self._ground_held = c.a or c.b
+        self._was_air = air
+        out = type(c)(lane_up=c.lane_up, lane_down=c.lane_down)
+        return self.air.apply(out, held_a, held_b, bike, bike.one_button)
+
+
+def make_pilot(ai, mode, skill, controls="button"):
+    """The simulated player: one-button heat keeping, then the control scheme."""
+    pilot = OneButtonPilot(ai, C.ONE_SUPER_AT - 1 + 2 * skill) if mode == "one" else ai
+    return ButtonPilot(pilot, skill) if controls == "button" else pilot
+
+
+def sim_run(seed, tier, mode, learning=False, controls="button", landings=None):
     """Play every heat of a run (even after a miss) with an AI player that picks
     the first upgrade offered. learning: the player goes novice -> good."""
     from race import Race
     from run.manager import RunState, RUN_HEATS
-    from run.upgrades import offer
     from track.validator import GhostAI
     r = RunState(seed=seed, mode=mode)
     out = []
@@ -223,16 +336,21 @@ def sim_run(seed, tier, mode, learning=False):
         else:
             skill, blunder, miss = TIERS[tier]
         ai = GhostAI(turbo=True, turbo_temp=24, skill=skill, blunder=blunder, miss=miss, seed=seed * 7 + i)
-        race = Race(h.track, st, rivals=h.rivals, rival_level=h.rival_level, seed=h.seed, countdown=False)
+        race = Race(h.track, st, rivals=h.rivals, rival_level=h.rival_level, seed=h.seed, countdown=False,
+                    boss=h.biome if h.boss else None)
         race.bike.one_button = mode == "one"
-        pilot = OneButtonPilot(ai, C.ONE_SUPER_AT - 1 + 2 * skill) if mode == "one" else ai
+        pilot = make_pilot(ai, mode, skill, controls)
         while not race.finished and race.time_ticks < 60 * 300:
-            race.step(pilot.controls(race.bike))
+            ev = race.step(pilot.controls(race.bike))
+            if landings is not None:
+                for e in ev or ():
+                    if e[0] in LANDING_EVENTS:
+                        landings[e[0] if e[0] != "crash" else "crash"] += 1
         res = {"finished": race.finished, "time": race.time_ticks, "position": race.position(),
                "perfect": race.bike.stats_counters["perfect"], "distance": race.bike.x}
         out.append({"heat": i, "met": h.target.check(res), "position": res["position"],
                     "crashes": race.bike.stats_counters["crashes"]})
-        o = offer(r.rng, r.upgrades, 3, mode)
+        o = r.offer_after(i)
         if o:
             r.upgrades.append(o[0].id)
     return out
@@ -248,7 +366,8 @@ def cmd_sim(args):
         for tier in tiers:
             per = [[] for _ in range(RUN_HEATS)]
             for seed in range(args.seeds):
-                for h in sim_run(1000 + seed, tier, mode, learning=tier == "learning"):
+                for h in sim_run(1000 + seed, tier, mode, learning=tier == "learning",
+                                 controls=args.controls):
                     per[h["heat"]].append(h)
             result[(mode, tier)] = per
     if args.json:
@@ -257,7 +376,8 @@ def cmd_sim(args):
                                          "crashes": round(sum(x["crashes"] for x in p) / len(p), 2)}
                                         for p in per] for (m, t), per in result.items()}, indent=1))
         return
-    print(f"# Simulated difficulty curve - {args.seeds} runs per row ({time.time() - t0:.0f}s)")
+    print(f"# Simulated difficulty curve - {args.seeds} runs per row, {args.controls} controls "
+          f"({time.time() - t0:.0f}s)")
     print("target met % per heat (avg place); goal for 'learning':",
           " ".join(f"{int(g * 100)}" for g in TARGET_CURVE), "\n")
     for (mode, tier), per in result.items():
@@ -325,12 +445,11 @@ def cmd_mods(args):
     print("\nRecorded modifier heats are rare (2 per run): back any change with `modsim`.")
 
 
-def modsim(seeds, mode="one", tiers=("average", "learning")):
+def modsim(seeds, mode="one", tiers=("average", "learning"), controls="button"):
     """Race the modifier heats of `seeds` runs once per modifier (and once with
     none), same tracks seeds and upgrades. Returns {mod: {met, place, crashes}}."""
     from race import Race
     from run.manager import RunState, MODIFIERS, MODIFIER_HEATS, RUN_HEATS
-    from run.upgrades import offer
     from track.validator import GhostAI
     res = {m: {"met": [], "place": [], "crashes": []} for m in [None] + list(MODIFIERS)}
     for seed in range(seeds):
@@ -338,8 +457,8 @@ def modsim(seeds, mode="one", tiers=("average", "learning")):
             for slot in MODIFIER_HEATS:
                 for m in res:
                     r = RunState(seed=2000 + seed, mode=mode)
-                    for _ in range(slot):                   # the upgrades you'd have by then
-                        o = offer(r.rng, r.upgrades, 3, mode)
+                    for j in range(slot):                   # the upgrades you'd have by then
+                        o = r.offer_after(j)
                         if o:
                             r.upgrades.append(o[0].id)
                     r.heat_i = slot
@@ -359,7 +478,7 @@ def modsim(seeds, mode="one", tiers=("average", "learning")):
                     race = Race(h.track, st, rivals=h.rivals, rival_level=h.rival_level, seed=h.seed,
                                 countdown=False)
                     race.bike.one_button = mode == "one"
-                    pilot = OneButtonPilot(ai, C.ONE_SUPER_AT - 1 + 2 * skill) if mode == "one" else ai
+                    pilot = make_pilot(ai, mode, skill, controls)
                     while not race.finished and race.time_ticks < 60 * 300:
                         race.step(pilot.controls(race.bike))
                     out = {"finished": race.finished, "time": race.time_ticks, "position": race.position()}
@@ -383,7 +502,7 @@ def suggest_hardness(sim):
 def cmd_modsim(args):
     from run.manager import MODIFIERS, MODIFIER_HARDNESS
     t0 = time.time()
-    sim = modsim(args.seeds, args.mode)
+    sim = modsim(args.seeds, args.mode, controls=args.controls)
     hurt, sug = suggest_hardness(sim)
     if args.json:
         print(json.dumps({"sim": {str(k): v for k, v in sim.items()}, "hurt": hurt, "suggested": sug,
@@ -400,6 +519,35 @@ def cmd_modsim(args):
     print("\nSuggested MODIFIER_HARDNESS =", json.dumps(sug))
     print("Hardest first. Only adopt a value whose 'hurt' is clearly apart from its neighbours"
           " (rerun with more --seeds if two are within ~0.05).")
+
+
+# --- landings by control scheme ---------------------------------------------------------------
+LANDING_EVENTS = ("perfect", "land", "rough", "crash", "bounce")
+
+
+def cmd_landsim(args):
+    """Landing outcomes per jump for each control scheme and skill tier."""
+    from run.manager import RUN_HEATS  # noqa: F401  (import check: run module loads)
+    t0 = time.time()
+    rows = {}
+    for controls in ("button", "keys"):
+        for tier in list(TIERS) + ["learning"]:
+            n = Counter()
+            for seed in range(args.seeds):
+                sim_run(1000 + seed, tier, args.mode, learning=tier == "learning",
+                        controls=controls, landings=n)
+            rows[(controls, tier)] = n
+    if args.json:
+        print(json.dumps({f"{c}/{t}": dict(n) for (c, t), n in rows.items()}, indent=1))
+        return
+    print(f"# Landing outcomes - {args.seeds} runs per row, mode {args.mode} ({time.time() - t0:.0f}s)")
+    print("share of real jumps (bounces = little hops, counted apart); crash includes"
+          " non-landing crashes\n")
+    for (controls, tier), n in rows.items():
+        jumps = max(1, n["perfect"] + n["land"] + n["rough"] + n["crash"])
+        print(f"{controls:<7} {tier:<9} jumps {jumps:>5}  perfect {n['perfect'] / jumps:5.0%}  "
+              f"clean {n['land'] / jumps:5.0%}  rough {n['rough'] / jumps:5.0%}  "
+              f"crash {n['crash'] / jumps:5.0%}  bounces {n['bounce']}")
 
 
 # --- archive ------------------------------------------------------------------------------------------------
@@ -434,13 +582,18 @@ def main(argv=None):
     p = sub.add_parser("show"); p.add_argument("id"); p.add_argument("--rivals", action="store_true")
     p = sub.add_parser("sim"); p.add_argument("--seeds", type=int, default=6)
     p.add_argument("--mode", default="one", choices=["one", "classic", "both"]); p.add_argument("--json", action="store_true")
+    p.add_argument("--controls", default="button", choices=["button", "keys"])
+    p = sub.add_parser("landsim"); p.add_argument("--seeds", type=int, default=4)
+    p.add_argument("--mode", default="one", choices=["one", "classic"]); p.add_argument("--json", action="store_true")
     p = sub.add_parser("archive"); p.add_argument("--note", default=""); p.add_argument("ids", nargs="*")
     p = sub.add_parser("mods"); p.add_argument("--json", action="store_true")
     p = sub.add_parser("modsim"); p.add_argument("--seeds", type=int, default=4)
     p.add_argument("--mode", default="one", choices=["one", "classic"]); p.add_argument("--json", action="store_true")
+    p.add_argument("--controls", default="button", choices=["button", "keys"])
     args = ap.parse_args(argv)
     {"summary": cmd_summary, "report": cmd_report, "show": cmd_show, "sim": cmd_sim,
-     "archive": cmd_archive, "mods": cmd_mods, "modsim": cmd_modsim}[args.cmd](args)
+     "archive": cmd_archive, "mods": cmd_mods, "modsim": cmd_modsim,
+     "landsim": cmd_landsim}[args.cmd](args)
 
 
 if __name__ == "__main__":

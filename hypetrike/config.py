@@ -90,18 +90,33 @@ FX_SHAKE = 1.5              # px of horizontal shake at full super boost
 
 # Heat arc worn by the rider (setting "heat_gauge"): centre offset from the
 # bike's ground contact point, and inner radius, in logical px.
-HEAT_ARC_DX = -3
-HEAT_ARC_DY = -44
-HEAT_ARC_R = 17
+# In-race bike + rider sprites are drawn at this scale, so the rider on the bike
+# matches the thrown / jogging rider after a crash (the garage shows full size).
+SPRITE_SCALE = 0.7
+# How the smaller sprites are made: "native" redraws the art's shapes at that size
+# (crisp pixels); True = filtered resample (blurry); False = nearest (drops rows).
+SPRITE_SMOOTH = "native"
+CAM_JUMP_PX = 30            # the bike moving more than this in one frame is a respawn jump ...
+CAM_SCROLL_EASE = 0.88      # ... the camera scrolls over to it (offset kept per frame)
+HEAT_ARC_DX = round(-3 * SPRITE_SCALE)
+HEAT_ARC_DY = round(-44 * SPRITE_SCALE)
+HEAT_ARC_R = 13
 
 # --- air / landing ---------------------------------------------------------------
 GRAVITY = 0.20              # px / tick^2
 PITCH_RATE = 2.2            # deg / tick while holding tilt in the air
-AIR_NOSE_DROP = 0.35        # deg / tick natural nose-down drift in the air
+AIR_NOSE_DROP = 0.32        # deg / tick natural nose-down drift in the air
+PRESS_START = 0.35          # mouse "button" scheme, button down mid-air: the nose-down push starts at
+PRESS_GROW = 0.05           # ... this share of the pitch rate and grows this much per tick (full after 13)
+RELEASE_GROW = 0.04         # ... button up mid-air: the nose lifts at the drift rate plus this share of
+RELEASE_MAX = 0.8           # ... the pitch rate per tick free, up to this share
 GROUND_ANGLE_LERP = 0.5
+PERFECT_GRACE_PX = 10.0     # lined up for a PERFECT this close above the ground ...
+PERFECT_GRACE_TICKS = 6     # ... still counts for this many ticks (last-moment twitches)
 LAND_PERFECT = 5.0          # |angle error| for a "perfect" landing
 LAND_TOLERANCE = 14.0       # |angle error| that still keeps all speed
 LAND_ROUGH = 38.0           # nose-high error up to this = rough landing (speed loss)
+LAND_ROUGH_NOSE = 32.0      # nose-low error down to -this = rough landing too (a bit less forgiving)
 ROUGH_SPEED_KEEP = 0.5
 ROUGH_WOBBLE_TICKS = 24
 MICRO_HOP_TICKS = 14         # hops shorter than this never crash
@@ -113,9 +128,13 @@ DEBRIS_CLEAR_H = 12         # air height that clears debris
 
 # --- lanes -----------------------------------------------------------------------
 LANE_CHANGE_RATE = 0.125    # lanes per tick
+CLIMB_SLOPE = 0.1            # uphill steeper than this (~6 deg): no heat gained
+LANE_STEP_MAX = 4.0         # px: a lane change can't climb onto ground higher than this
 
 # --- crash -------------------------------------------------------------------------
 CRASH_TICKS = 130           # thrown off + jog back
+RESPAWN_CLEAR_COLS = 3      # a hazard within this many tiles of a respawn: respawn past it instead
+RESPAWN_MAX_SKIP = 10       # ... but never move a respawn more than this many tiles
 
 # --- race ------------------------------------------------------------------------------
 COUNTDOWN_TICKS = 180
