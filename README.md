@@ -21,8 +21,14 @@ cd hypetrike && ../.venv/bin/python main.py
 | Pause | `Esc` / `P` | **II** |
 
 Land with the wheels matching the ground's slope. Nose-down landings crash you;
-nose-high landings cost speed. Holding A keeps the engine at a safe 17, while
-turbo climbs toward the overheat point (32). Coolant pads reset the temperature.
+nose-high landings cost speed. In one-button mode (the default) heat is the
+throttle: cold, then a wide safe **warm** band, then **hot** (faster) and
+**overheating** (fastest, on fire, blows up at the top). Each zone sounds
+different. Sit in a rival's slipstream to heat up and catch them.
+
+Runs give you 3 lives: a missed race costs one (ride it again), a lost boss
+costs two and its elite upgrade. Every race earns your bike XP to spend on its
+upgrades in the Garage; coins only buy paint, rider and boost colours.
 
 ## Play on your Android phone (local Wi-Fi)
 
@@ -86,7 +92,7 @@ docs/art/             rendered art sheets and screenshots
 ```
 
 Tuning lives in `hypetrike/config.py`. Vehicle stats are in `bike.VEHICLES`,
-upgrades in `run/upgrades.py`, prices in `meta/shop.py`, and segments in
+run upgrades in `run/upgrades.py`, bike upgrades and XP in `meta/bike_tune.py`, cosmetic prices in `meta/shop.py`, and segments in
 `track/generator.py`.
 
 Saves go to `~/.local/share/hypetrike/` (Linux), `%APPDATA%\HypeTrike` (Windows)

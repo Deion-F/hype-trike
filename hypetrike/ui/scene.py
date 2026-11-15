@@ -44,6 +44,7 @@ class RaceScene(Scene):
         self.title = title
         self.info_lines = info_lines or []
         self.target = target
+        self.upgrades = list((context or {}).get("upgrades") or ())   # run upgrades, shown as icons
         self.race = Race(track, stats, rivals=rivals, rival_level=rival_level, seed=seed, boss=boss)
         self.replay = replay
         if replay is not None:
@@ -160,7 +161,7 @@ class RaceScene(Scene):
             if k == "hoop_lost":
                 self.popups.add("HOOP LOST", (200, 120, 100), sx, sy - 50, 40)
                 continue
-            if k in ("perfect", "land", "rough"):
+            if k in ("perfect", "land", "rough", "rough_free"):
                 # Every real landing (not micro-hops): home moves to the cursor, so
                 # the air lean the hand was holding becomes the new neutral.
                 self.app.input.recenter_anchor()
@@ -171,6 +172,9 @@ class RaceScene(Scene):
                 self.popups.add("ROUGH  -HEAT" if b.one_button else "ROUGH", (255, 160, 90), sx, sy - 40)
                 if b.one_button:
                     self.renderer.emit_burst(b, (200, 200, 210), 10, 1.4)     # heat vented as steam
+            elif k == "rough_free":
+                self.popups.add("ROUGH - ABSORBED!", (140, 230, 255), sx, sy - 40)
+                self.renderer.emit_burst(b, (140, 230, 255), 10, 1.5)
             elif k == "bounce":
                 self.popups.add("bump", (230, 230, 230), sx, sy - 34, 25)
             elif k == "crash":
@@ -223,11 +227,11 @@ class RaceScene(Scene):
         self.boost_k = min(1.0, self.boost_k + 0.25) if boosting else max(0.0, self.boost_k - 0.15)
         # Speed feel: ease toward the boost level, then scroll the backdrop faster.
         tb = 1.0 if boosting else 0.0
-        ts = 1.0 if boosting and b.boost_level == 2 else 0.0
+        ts = (0.0, 0.0, 0.5, 1.0)[b.boost_level] if boosting else 0.0
         self.fx_boost += max(-C.FX_EASE, min(C.FX_EASE, tb - self.fx_boost))
         self.fx_super += max(-C.FX_EASE, min(C.FX_EASE, ts - self.fx_super))
         self.bg_scroll += b.vx * (1 + C.FX_BG_BOOST * self.fx_boost + C.FX_BG_SUPER * self.fx_super)
-        if boosting and self.ticks % (2 if b.boost_level == 2 else 3) == 0:
+        if boosting and self.ticks % (2 if b.boost_level >= 2 else 3) == 0:
             self.renderer.emit_boost_sparks(b, b.x, self.boost_theme)
         if self.race.started and self.ticks % 4 == 0:
             for rb in self.race.rivals:             # rivals show their boost too
@@ -237,9 +241,9 @@ class RaceScene(Scene):
             for bk in (b, *self.race.rivals):
                 if abs(bk.x - b.x) < self.app.view.width:
                     self.renderer.emit_fire_embers(bk, b.x)
-        if b.state == "ride" and b.boost_level == 2:
-            # super boost: smoke, thicker as the heat nears the explosion
-            danger = (b.temp - C.ONE_SUPER_AT) / (C.TEMP_OVERHEAT - C.ONE_SUPER_AT)
+        if b.state == "ride" and b.boost_level >= 2:
+            # hot / overheating: smoke, thicker as the heat nears the explosion
+            danger = (b.temp - C.ONE_HOT_AT) / (C.TEMP_OVERHEAT - C.ONE_HOT_AT)
             if self.ticks % (3 if danger < 0.5 else 2) == 0:
                 self.renderer.emit_smoke(b, b.x, max(0.0, min(1.0, danger)))
         self.renderer.particles.update()
@@ -334,13 +338,23 @@ class RaceScene(Scene):
         hud.text(surf, self._boss_info["name"], (x, y - 6), 15, g, anchor="center")
 
     def _draw_overheating(self, surf, rd, b, cam):
-        """Above your heat gauge while it's in the top zone (faster, but it can blow)."""
-        hot_at = C.ONE_SUPER_AT if b.one_button else C.RED_AT
-        if b.state != "ride" or b.temp < hot_at:
+        """Above your heat gauge in the top zones: HOT (faster), OVERHEATING (fastest,
+        on fire, can blow)."""
+        if b.state != "ride":
+            return
+        if b.one_button:
+            zone = b.heat_zone()
+        else:
+            zone = 3 if b.temp >= C.RED_AT else 0
+        if zone < 2:
             return
         sx, sy = rd.bike_screen_pos(b, cam)
-        col = C.DANGER if (self.ticks // 6) % 2 == 0 else (255, 220, 160)
-        hud.text(surf, "OVERHEATING", (int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 10)),
+        if zone == 2:
+            label, col = "HOT", (255, 150, 50)
+        else:
+            label = "OVERHEATING"
+            col = C.DANGER if (self.ticks // 6) % 2 == 0 else (255, 220, 160)
+        hud.text(surf, label, (int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 10)),
                  14, col, anchor="center")
 
     def _draw_you(self, surf, rd, b, cam):
@@ -372,6 +386,7 @@ class RaceScene(Scene):
             "time": r.clock,
             "laps": list(r.lap_times),
             "position": r.position(),
+            "beat_boss": r.beat_boss(),
             "field": len(r.rivals) + 1,
             "perfect": r.bike.stats_counters["perfect"],
             "crashes": r.bike.stats_counters["crashes"],
@@ -452,6 +467,10 @@ class RaceScene(Scene):
                      for rb in self.race.rivals]
         rd.draw_boss_trail(surf, self.race, cam, self.ticks)
         rd.draw_hoops(surf, self.track, cam, self.ticks, front=False)
+        if b.drafting:
+            leader = self.race.slipstream_of(b)
+            if leader is not None:
+                rd.draw_slipstream(surf, b, leader, cam, self.ticks)
         bikes.append((b, self.livery, True))
         marked = self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS
         # depth by lane; while the start marker shows, the player is drawn on top
@@ -466,7 +485,7 @@ class RaceScene(Scene):
                 # everyone's exhaust flame is their heat gauge (rivals included)
                 rd.draw_heat_flame(surf, bk, cam, self.ticks, pal)
             elif me and self.boost_k > 0 and bk.state == "ride":
-                rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl == 2, pal)
+                rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl >= 2, pal)
             outline = self._outline(bk) if me else (self._boss_glow() if bk is boss_bike else None)
             rd.draw_bike(surf, bk, cam, liv, frame, me, outline)
             rd.draw_bike_fire(surf, bk, cam, self.ticks)
@@ -475,15 +494,15 @@ class RaceScene(Scene):
             if me and (self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS) \
                     and bk.state == "ride":
                 self._draw_you(surf, rd, bk, cam)
-            rd.draw_heat_arc(surf, bk, cam, self.ticks, always=me)
-            if me:
+            if me:                                 # the heat gauge is the player's alone
+                rd.draw_heat_arc(surf, bk, cam, self.ticks, always=True)
                 self._draw_overheating(surf, rd, bk, cam)
         rd.draw_hoops(surf, self.track, cam, self.ticks, front=True)
         rd.draw_boss_aura(surf, self.race, cam, self.ticks)
         if self.race.brain is not None:
             self._draw_blackout(surf, rd, b, cam)
         if self.boost_k > 0 and b.state == "ride":
-            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl == 2, self.boost_theme)
+            rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl >= 2, self.boost_theme)
         rd.particles.draw(surf, cam)
         rd.draw_speed_lines(surf, self.ticks, self.fx_boost * 0.7 + self.fx_super * 0.3,
                             self.fx_super > 0.5)
@@ -493,7 +512,10 @@ class RaceScene(Scene):
         if self.target:
             extra.append(self.target.describe())
         hud.race_hud(surf, self.race, W, self.ticks, extra, self.best_lap,
-)
+                     speed=self.app.profile.settings.get("speed_gauge", False))
+        if self.upgrades and self.result is None:
+            mode = "one" if self.race.bike.one_button else "classic"
+            hud.upgrade_icons(surf, self.upgrades, self.race.bike, W - 8, 54, 230, mode, names=self.paused)
         if self.replay is not None and (self.ticks // 30) % 2 == 0 and self.result is None:
             hud.text(surf, "REPLAY" + ("  x2" if self.replay_fast else ""), (W // 2, 96), 26,
                      (255, 90, 90), anchor="center")

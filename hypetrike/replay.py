@@ -32,7 +32,7 @@ CTL_BITS = ("a", "b", "left", "right", "lane_up", "lane_down", "ramp")   # new b
 WEB = sys.platform == "emscripten"
 
 # Events worth logging (bike.step / race.step event names).
-LOGGED = {"perfect", "land", "rough", "bounce", "crash", "explode", "forgiven", "overheat",
+LOGGED = {"perfect", "land", "rough", "rough_free", "bounce", "crash", "explode", "forgiven", "overheat",
           "cooled", "vent", "heatpad", "coolant", "splash", "lava", "bump", "recovered",
           "lap", "finish", "go"}
 
@@ -111,7 +111,7 @@ class Recorder:
         }
         self._inputs = []
         self._tick = 0
-        self._boost = [0, 0, 0]       # ticks at boost level 0/1/2 while riding
+        self._boost = [0, 0, 0, 0]    # ticks in heat zone cold/warm/hot/overheating while riding
         self._air = 0
         self._max_temp = 0.0
         self._speed_sum = 0.0
@@ -174,7 +174,7 @@ class Recorder:
                                      "pitch_rate": _r(st.pitch_rate, 2)},
                            "crashes": count("crash", i + 1), "explodes": count("explode", i + 1),
                            "overheats": count("overheat", i + 1), "perfect": count("perfect", i + 1)})
-        landings = sum(count(k) for k in ("perfect", "land", "rough")) + crash_reasons.get("nose", 0) \
+        landings = sum(count(k) for k in ("perfect", "land", "rough", "rough_free")) + crash_reasons.get("nose", 0) \
             + crash_reasons.get("loop", 0)
         ride = max(1, self._ride)
         res = dict(result or {})

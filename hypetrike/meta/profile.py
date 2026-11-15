@@ -87,15 +87,16 @@ DEFAULTS = {
     "best_biome": 0,         # most biomes cleared in one run
     "vehicles": ["dirt"],
     "liveries": ["flame"],
-    "kit_levels": {},        # Starter Kit: {item id: level 0..5}
-    "bike_levels": {},       # bike tuning, per vehicle: {vehicle: {stat: level 0..5}}
+    "bike_levels": {},       # bike upgrades, per vehicle: {vehicle: {upgrade id: level 0..5}}
+    "bike_xp": {},           # unspent XP per vehicle (earned riding it in runs)
+    "bike_xp_total": {},     # lifetime XP per vehicle
     "boosts": ["flame"],      # boost colour schemes owned
     "selected": {"vehicle": "dirt", "livery": "flame", "rider": "flame", "boost": "flame"},
     "settings": {"sound": True, "music": True, "smooth": False,
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
                  "touch_ui": "auto", "mouse_steer": "button", "throttle_mode": "one",
                  "mouse_wheelie": "ramps", "heat_gauge": "both", "lane_guide": False,
-                 "mouse_lanes": "hover", "record_races": True, "air_lane_lock": True,
+                 "mouse_lanes": "hover", "record_races": True, "speed_gauge": False, "air_lane_lock": True,
                  "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 3},
     "tracks": {},
     "best_laps": {},
@@ -142,6 +143,20 @@ class Profile:
             from meta.shop import OLD_KIT_PRICES
             d["currency"] += sum(OLD_KIT_PRICES.get(k, 0) for k in set(old_kits))
         d["kits_refunded"] = True
+        # v2 progression: bikes are upgraded with their own XP (meta/bike_tune.py) and the
+        # global Starter Kit folded into those per-bike upgrades. Convert once, keeping the
+        # power the old coin-bought levels gave on every owned bike.
+        if d.get("progression_v", 1) < 2:
+            from meta.bike_tune import migrate_levels
+            kit = d.pop("kit_levels", None) or {}
+            old_levels = d.get("bike_levels") or {}
+            d["bike_levels"] = {v: migrate_levels(old_levels.get(v, {}), kit) for v in d["vehicles"]}
+            if kit.get("sponsor") and data:
+                # Sponsor Deal (more coins) has no bike upgrade: refund what it cost.
+                from meta.kit import KIT
+                d["currency"] += sum(KIT["sponsor"].price(i) for i in range(min(5, kit["sponsor"])))
+        d.pop("kit_levels", None)
+        d["progression_v"] = 2
         self.data = d
 
     # convenience accessors
@@ -192,8 +207,24 @@ class Profile:
         vehicle = vehicle or self.data["selected"]["vehicle"]
         return self.data.setdefault("bike_levels", {}).setdefault(vehicle, {})
 
+    def bike_xp(self, vehicle=None):
+        vehicle = vehicle or self.data["selected"]["vehicle"]
+        return int(self.data.setdefault("bike_xp", {}).get(vehicle, 0))
+
+    def earn_xp(self, vehicle, amount):
+        amount = int(amount)
+        for key in ("bike_xp", "bike_xp_total"):
+            book = self.data.setdefault(key, {})
+            book[vehicle] = book.get(vehicle, 0) + amount
+
+    def spend_xp(self, vehicle, amount):
+        if self.bike_xp(vehicle) < amount:
+            return False
+        self.data["bike_xp"][vehicle] -= amount
+        return True
+
     def player_stats(self, vehicle=None):
-        """The chosen vehicle at the player's tuning levels (no run upgrades)."""
+        """The chosen vehicle at the player's upgrade levels (no run upgrades)."""
         from bike import base_stats
         from meta.bike_tune import apply_tune
         vehicle = vehicle or self.data["selected"]["vehicle"]

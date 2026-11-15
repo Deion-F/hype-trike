@@ -51,8 +51,8 @@ def test_run_is_five_biomes_of_two_races_and_a_boss():
     for h in r.heats:
         assert h.biome == BIOMES[h.index // 3]
         assert h.boss == (h.index % 3 == 2)
-        if h.boss:                                  # bosses must be won ...
-            assert h.target.kind == "place" and h.target.value == 1
+        if h.boss:                                  # bosses must be beaten to the line ...
+            assert h.target.kind == "boss"
         else:                                       # ... normal races only need a podium
             assert h.target.value >= 2
 
@@ -84,7 +84,8 @@ def test_boss_win_offers_elite_upgrades():
     r = RunState(seed=7)
     r.heat_i = 2
     r.prepare_heat()
-    r.record({"finished": True, "time": 1, "position": 1, "perfect": 0, "distance": 10}, base_stats())
+    r.record({"finished": True, "time": 1, "position": 3, "beat_boss": True, "perfect": 0, "distance": 10},
+             base_stats())                          # third place, but ahead of the boss: cleared
     assert r.status == "active" and all(u.tier == "elite" for u in r.pending_offer)
     r.choose(r.pending_offer[0].id)
     assert r.heat.biome == "desert" and r.biomes_cleared() == 1
@@ -94,15 +95,53 @@ def test_elite_upgrades_beat_their_regular_counterparts():
     b = base_stats()
     assert apply_upgrades(b, ["works_engine"]).max_speed_a > apply_upgrades(b, ["big_bore", "big_bore"]).max_speed_a
     pro = apply_upgrades(b, ["pro_suspension"])
-    assert pro.rough_loss_mult < apply_upgrades(b, ["plush_forks"]).rough_loss_mult
+    assert pro.perfect_shield and pro.rough_loss_mult == 1.0       # free rough landings are earned, not permanent
     assert pro.land_saves > apply_upgrades(b, ["crumple_zone"]).land_saves
 
 
-def test_failing_a_heat_ends_the_run():
+def test_missing_a_normal_race_costs_a_life_and_moves_on():
+    from run.manager import LIVES
+    r = RunState(seed=3)
+    assert r.lives == LIVES == 3
+    miss = {"finished": True, "time": 0, "position": 4, "perfect": 0, "distance": 100}
+    r.prepare_heat()
+    r.record(miss, base_stats())
+    assert r.status == "active" and r.lives == 2 and r.missed and r.pending_offer is None
+    r.move_on()
+    assert r.heat_i == 1 and not r.missed
+    r.prepare_heat()
+    r.record(miss, base_stats())
+    r.move_on()
+    r.prepare_heat()
+    r.record(miss, base_stats())                    # third life gone (a boss loss would cost 2)
+    assert r.status == "lost" and r.lives == 0
+
+
+def test_losing_a_boss_costs_two_lives_and_the_elite_pick():
+    from run.manager import BOSS_LOSS_LIVES
+    lost = {"finished": True, "time": 0, "position": 1, "beat_boss": False, "perfect": 0, "distance": 9}
+    r = RunState(seed=3)
+    r.heat_i = 2
+    r.prepare_heat()
+    r.record(lost, base_stats())                    # won the race, but the boss was ahead: lost
+    assert r.status == "active" and r.lives == 3 - BOSS_LOSS_LIVES == 1
+    assert r.missed and r.pending_offer is None
+    r.move_on()
+    assert r.heat_i == 3 and r.heat.biome == "desert" and r.biomes_cleared() == 0
+    r.heat_i = 5                                     # the next boss with one life left: run over
+    r.record(lost, base_stats())
+    assert r.status == "lost" and r.lives == 0
+    final = RunState(seed=3)
+    final.heat_i = RUN_HEATS - 1                     # losing the final boss always ends the run
+    final.record(lost, base_stats())
+    assert final.status == "lost" and final.lives == 1
+
+
+def test_quitting_a_race_ends_the_run():
     r = RunState(seed=3)
     r.prepare_heat()
-    r.record({"finished": False, "time": 0, "position": 4, "perfect": 0, "distance": 100}, base_stats())
-    assert r.status == "lost" and r.pending_offer is None
+    r.record({"finished": False, "forfeit": True, "time": 0, "position": 4, "distance": 9}, base_stats())
+    assert r.status == "lost"
 
 
 def test_full_run_can_be_won_and_pays_out():
@@ -113,10 +152,12 @@ def test_full_run_can_be_won_and_pays_out():
     while r.status == "active":
         h = r.prepare_heat()
         st = r.stats_for_heat(h)
+        # No boss powers here (the ghost isn't built to beat them): winning stands in for beating the boss.
         race = Race(h.track, st, rivals=h.rivals, rival_level=h.rival_level, seed=h.seed, countdown=False)
         while not race.finished and race.time_ticks < 60 * 300:
             race.step(ai.controls(race.bike))
         res = {"finished": race.finished, "time": race.time_ticks, "position": race.position(),
+               "beat_boss": race.position() == 1,
                "perfect": race.bike.stats_counters["perfect"], "distance": race.bike.x, "forgiven": 0}
         r.record(res, st)
         if r.status == "active":
@@ -216,7 +257,7 @@ def test_first_map_has_no_whoops():
 def test_every_heat_is_a_race_with_rivals():
     for seed in range(6):
         for h in RunState(seed=seed).heats:
-            assert h.rivals == 3 and h.target.kind == "place"
+            assert h.rivals == 3 and h.target.kind == ("boss" if h.boss else "place")
 
 
 def test_time_trial_mode_is_solo_against_par():
@@ -288,8 +329,8 @@ def test_warm_up_reaches_boost_sooner():
 def test_heat_wrap_keeps_speed_after_letting_go():
     def speed_after_release(ids):
         b = _bike(ids)
-        ticks_until(b, lambda b: b.temp >= 20)
-        for _ in range(300):                     # 5 s off: plain drains out of boost
+        ticks_until(b, lambda b: b.temp >= C.ONE_BOOST_AT + 4)
+        for _ in range(150):                     # 2.5 s off: plain drains out of boost
             b.step(Controls())
         return b.speed
     assert speed_after_release(["heat_wrap"]) > speed_after_release([])
@@ -323,26 +364,48 @@ def test_supercharger_is_faster_in_the_red():
     assert top(["supercharger"]) >= top([]) + 2
 
 
-def test_overheating_scales_with_depth_and_turns_faster():
-    def top(temp):
-        b = _bike([]); b.temp = temp
-        for _ in range(300):
-            b.temp = temp
-            b.step(Controls(a=True))
-        return b.speed
-    edge, mid, deep = (C.ONE_SUPER_AT + 0.2, (C.ONE_SUPER_AT + C.TEMP_OVERHEAT) / 2, C.TEMP_OVERHEAT - 0.3)
-    boost = top(C.ONE_SUPER_AT - 1)
-    assert boost < top(edge) < top(mid) < top(deep)          # deeper = faster
+def _top(temp, ids=()):
+    b = _bike(list(ids)); b.temp = temp
+    for _ in range(300):
+        b.temp = temp
+        b.step(Controls(a=True))
+    return b.speed
+
+
+def test_each_heat_zone_is_faster_and_riskier_than_the_last():
+    warm, hot = (C.ONE_BOOST_AT + C.ONE_HOT_AT) / 2, (C.ONE_HOT_AT + C.ONE_OVERHEAT_AT) / 2
+    edge, deep = C.ONE_OVERHEAT_AT + 0.2, C.TEMP_OVERHEAT - 0.3
+    speeds = [_top(t) for t in (warm, hot, edge, deep)]
+    assert speeds == sorted(speeds) and len(set(speeds)) == 4
+    assert speeds[1] >= speeds[0] + 2.5                        # hot: a clear step up from warm
+    assert speeds[2] >= speeds[1] + 3.5                        # overheating: a big one from hot
+    # acceleration, air rotation, heating rate and landing window by zone
+    accel, turn, heat, land = [], [], [], []
+    for t in (warm, hot, deep):
+        b = _bike([]); b.temp = t
+        accel.append(b._accel_interval())
+        turn.append(b._pitch_rate())
+        land.append(b._land_mult())
+        before = b.temp
+        b.step(Controls(a=True))
+        heat.append(b.temp - before)
+    assert accel[0] > accel[1] > accel[2]                      # quicker the hotter
+    assert turn[0] < turn[1] < turn[2]
+    assert heat[0] < heat[1] < heat[2]                         # ... but heat runs away faster
+    assert land[0] == land[1] == 1.0 and land[2] < 1.0         # and a burning bike lands narrower
     b = _bike([]); b.temp = deep
-    k = b.overheat_depth()
-    assert k > 0.9 and b._accel_interval() < b.stats.accel_interval
-    b.temp = C.ONE_SUPER_AT - 1
-    assert b.overheat_depth() is None and b._accel_interval() == b.stats.accel_interval
-    for temp, faster in ((C.ONE_SUPER_AT - 1, False), (edge, True), (deep, True)):
-        b = _bike([]); b.temp = temp
-        b.airborne, b.h, b.vy, b.angle = True, b.track.ground(b.x) + 100, 3.0, 0.0
-        b.step(Controls(left=True))
-        assert (b.angle > b.stats.pitch_rate * 1.1) == faster, temp
+    assert b.overheat_depth() > 0.9
+    b.temp = C.ONE_OVERHEAT_AT - 0.1
+    assert b.overheat_depth() is None and b.heat_zone() == 2
+
+
+def test_warm_band_is_the_widest_and_slowest_to_cross():
+    warm = C.ONE_HOT_AT - C.ONE_BOOST_AT
+    assert warm >= C.TEMP_OVERHEAT / 2 > warm - C.HEAT_BAR
+    assert warm > C.ONE_OVERHEAT_AT - C.ONE_HOT_AT and warm > C.TEMP_OVERHEAT - C.ONE_OVERHEAT_AT
+    b = _bike([]); b.temp = C.ONE_BOOST_AT
+    t = ticks_until(b, lambda b: b.temp >= C.ONE_HOT_AT)
+    assert t > 4.5 * C.FPS                                     # several seconds of safe boost
 
 
 def test_pre_heater_restarts_warm_after_a_crash():
@@ -507,3 +570,47 @@ def test_prize_money_and_bounty_pay_for_wins():
         return r.payout()[1]["heats"]
     assert total(["prize_money"]) == total([]) + 2 * 15
     assert total(["bounty_hunter"]) == total([]) + 60
+
+
+def test_slipstream_behind_a_rival_heats_faster_and_lifts_top_speed():
+    t = _flat(400)
+    race = Race(t, base_stats(), rivals=1, rival_level=0.5, seed=1, countdown=False)
+    b, rb = race.bike, race.rivals[0]
+    b.one_button = True
+    rb.lane_pos, b.lane_pos = 1.0, 1.0
+    rb.x, b.x = 600.0, 600.0 - C.SLIP_RANGE * 0.5
+    assert race.slipstream_of(b) is rb
+    b.x = 600.0 - C.SLIP_RANGE - 5                     # too far back
+    assert race.slipstream_of(b) is None
+    b.x, b.lane_pos = 600.0 - 20, 2.0                  # other lane
+    assert race.slipstream_of(b) is None
+    b.lane_pos = 1.0
+    b.temp = C.ONE_BOOST_AT + 2
+    warm_speed = b.heat_speed()
+    b.drafting = True
+    assert b.heat_speed() > warm_speed
+    gain = []
+    for d in (False, True):
+        b.drafting, b.temp = d, C.ONE_BOOST_AT + 2
+        b._temperature_one(Controls(a=True), [])
+        gain.append(b.temp - (C.ONE_BOOST_AT + 2))
+    assert gain[1] > gain[0] * 1.3
+
+
+def test_pro_suspension_banks_one_free_rough_landing_per_perfect():
+    def landing(b, err):
+        b.airborne, b.air_ticks, b.vy = True, 40, -2.0
+        b.h = b.track.ground(b.x, b.lane_index)
+        b.angle = err                                   # flat ground: the angle is the error
+        b.speed = 40
+        ev = []
+        b._land(ev)
+        return [e[0] for e in ev]
+    b = _bike(["pro_suspension"])
+    assert "rough" in landing(b, 25)                    # nothing banked yet: a normal rough landing
+    assert "perfect" in landing(b, 0) and b.rough_shield
+    assert "rough_free" in landing(b, 25) and b.speed == 40 and not b.rough_shield
+    assert "rough" in landing(b, 25)                    # one per perfect, not for the race
+    plain = _bike([])
+    landing(plain, 0)
+    assert not plain.rough_shield

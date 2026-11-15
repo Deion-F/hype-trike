@@ -44,29 +44,46 @@ HEAT_B = 0.07               # per tick on B (no ceiling until overheat)
 COOL_A = 0.03               # per tick when above 17 on A
 COOL_COAST = 0.05           # per tick when off throttle
 # One-button throttle (setting "throttle_mode" = "one"): heat IS the throttle.
-# Holding heats the engine, letting go cools it, and speed follows the heat:
-# 0..ONE_BOOST_AT ramps 0..A top speed, ONE_BOOST_AT..ONE_SUPER_AT is the boost
-# band (turbo top speed), past ONE_SUPER_AT is super boost, and reaching
-# TEMP_OVERHEAT explodes the bike. The engine starts cold; a crash zeroes the heat.
-ONE_BOOST_AT = 9.0          # start of the boost band (classic A ceiling is 17)
-ONE_COLD_HEAT_MULT = 1.6    # heat_a multiplier below the boost band (~2 s cold -> boost)
-# Heat is shown as HEAT_BARS segments (the arc over the rider); pads and the red
-# window are measured in whole bars so they read straight off the gauge.
-HEAT_BARS = 12
-HEAT_BAR = TEMP_OVERHEAT / HEAT_BARS   # heat per bar (~2.67)
+# Holding heats the engine, letting go cools it, and speed follows the heat
+# through four zones, each a step riskier and faster than the last:
+#   COLD      0 .. ONE_BOOST_AT       speed ramps 0 .. A top speed (warming up)
+#   WARM      .. ONE_HOT_AT           turbo top speed; heat climbs slowly (WARM_HEAT_MULT):
+#                                     a wide, safe band to sit in
+#   HOT       .. ONE_OVERHEAT_AT      +HOT_SPEED_K x super_extra top speed, quicker accel;
+#                                     heat climbs at the full rate
+#   OVERHEAT  .. TEMP_OVERHEAT        far more speed and accel, but the bike burns: heat
+#                                     climbs faster still, the landing window shrinks, and
+#                                     reaching the top blows the bike up
+# The engine starts cold; a crash zeroes the heat.
+ONE_COLD_HEAT_MULT = 1.6    # heat_a multiplier below the warm band
+# Heat is shown as HEAT_BARS segments (the arc over the rider); pads and zones are
+# measured in whole bars so they read straight off the gauge.
+HEAT_BARS = 16
+HEAT_BAR = TEMP_OVERHEAT / HEAT_BARS   # heat per bar (2.0)
+ONE_BOOST_AT = 2 * HEAT_BAR            # = 4: cold -> warm (2 bars of cold)
+ONE_HOT_AT = 10 * HEAT_BAR             # = 20: warm -> hot (8 bars of warm, half the gauge)
+ONE_OVERHEAT_AT = 13 * HEAT_BAR        # = 26: hot -> overheating, where the bike catches fire
+ONE_SUPER_AT = ONE_HOT_AT              # old name: where the boost band ends (hot and up)
+SUPER_BARS = HEAT_BARS - 10            # hot + overheating bars
+WARM_HEAT_MULT = 0.75       # heating rate in the warm band (x heat_b): a longer, safer window
+HOT_HEAT_MULT = 1.0         # ... in the hot band
+OVERHEAT_HEAT_MULT = 1.35   # ... and while overheating (it runs away from you)
 # Pads are HEAT pads in one-button mode, in three sizes: +1 / +2 / +3 bars
 # (track.tiles.PAD_BARS). Speed, but risk.
 ONE_ROUGH_HEAT_LOSS = 6.0   # rough landings dump this much heat (lost boost / speed)
-SUPER_BARS = 3              # the red super-boost window is the top 3 bars
-ONE_SUPER_AT = TEMP_OVERHEAT - SUPER_BARS * HEAT_BAR   # = 24 (8 heat, ~1.9 s at the boost heat rate)
 RED_AT = 27.0               # classic mode's red zone on the gauge (turbo nearly overheating)
 VENT_DROP = 4.0             # Radiator vent (one-button): heat drops to this far below the red
-SUPER_BOOST_EXTRA = 3       # extra top speed over turbo while super-boosting
-# Overheating zone (one-button, heat ONE_SUPER_AT..blow-up) scales with depth:
-OVERHEAT_SPEED_LO = 0.5     # top-speed bonus at the zone's edge, x SUPER_BOOST_EXTRA (+1.5) ...
-OVERHEAT_SPEED_HI = 2.0     # ... rising to this at the very top (+6)
-OVERHEAT_ACCEL = 0.4        # acceleration up to 40% quicker at the top (interval x (1 - this x depth))
+SUPER_BOOST_EXTRA = 3       # bike stat super_extra: the unit of hot / overheat top speed
+# Hot band: top speed over turbo, acceleration and air rotation.
+HOT_SPEED_K = 1.0           # +1 x super_extra (+3)
+HOT_ACCEL = 0.2             # acceleration interval x (1 - this): 20% quicker
+HOT_TURN = 1.1
+# Overheating zone (heat ONE_OVERHEAT_AT..blow-up) scales with depth:
+OVERHEAT_SPEED_LO = 2.5     # top speed over turbo at the zone's edge, x super_extra (+7.5) ...
+OVERHEAT_SPEED_HI = 3.5     # ... rising to this at the very top (+10.5)
+OVERHEAT_ACCEL = 0.45       # acceleration 45% quicker anywhere in the zone
 OVERHEAT_TURN = 1.25        # air rotation 25% faster anywhere in the zone
+OVERHEAT_LAND = 0.75        # ... but the safe landing window is 25% narrower (the bike is on fire)
 EXPLODE_EXTRA_TICKS = 100   # explosion lasts this much longer than a normal crash
 EXPLODE_DROP_AT = 0.82      # fraction of the explosion when the new bike touches down
 # Water puddles (any theme but Volcano): a splash that cools the engine and slows you.
@@ -103,7 +120,7 @@ CAM_JUMP_PX = 30            # the bike moving more than this in one frame is a r
 CAM_SCROLL_EASE = 0.88      # ... the camera scrolls over to it (offset kept per frame)
 # Heat gauge: a smooth curved bar worn over the rider's helmet (the only heat
 # gauge): centre offset from the bike's ground contact point, inner radius, px.
-FIRE_FROM = 0.5             # the bike catches fire this far into the red window (0..1)
+FIRE_FROM = 0.0             # the bike catches fire this far into the overheating zone (0..1)
 HEAT_ARC_DX = round(-3 * SPRITE_SCALE)
 HEAT_ARC_DY = round(-44 * SPRITE_SCALE)
 HEAT_ARC_R = 13
@@ -135,6 +152,16 @@ WALL_CATCH = 16             # px below a deck's far lip you can still scramble u
 MUD_SPEED = 18              # speed limit on mud
 DEBRIS_SAFE_SPEED = 10      # hitting debris at or below this only stops you
 DEBRIS_CLEAR_H = 12         # air height that clears debris
+
+# --- slipstream ------------------------------------------------------------------
+# Tucked in a small pocket right behind another rider in your lane (player only):
+# a little more top speed, and in one-button mode the engine heats faster (heat is
+# speed), so sitting in the draft reels the rider in. The Slipstream run upgrade
+# makes the pocket longer and the speed bonus bigger.
+SLIP_RANGE = 1.25 * 80      # px behind the rider ahead (just over a section)
+SLIP_LANE = 0.45            # lanes either side of that rider's line
+SLIP_SPEED = 0.05           # +5% top speed while drafting
+SLIP_HEAT_MULT = 1.4        # one-button: heating rate x this while drafting and holding
 
 # --- lanes -----------------------------------------------------------------------
 LANE_CHANGE_RATE = 0.125    # lanes per tick

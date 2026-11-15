@@ -3,16 +3,19 @@
 A run is a tour of the five biomes, easiest to hardest (BIOMES). Each biome is
 two normal races and a boss race: win the boss to move on to the next biome,
 and pick an elite upgrade (a stronger tier) on the way. Normal races offer 1 of
-3 regular upgrades (Q7). Crashes only cost time (Q9). Missing a race's target
-ends the run. Runs are never saved mid-run.
+3 regular upgrades (Q7). Crashes only cost time (Q9). A run has LIVES lives:
+missing a normal race's target costs one, losing to a boss BOSS_LOSS_LIVES;
+either way you move on to the next race without that race's upgrade pick. Running out of lives, losing the final boss or quitting a race
+ends the run. Every race also earns the
+bike XP (meta/bike_tune.xp_for_race), banked when the run ends. Runs are never
+saved mid-run.
 """
 import random
 
 import config as C
 from bike import base_stats
 from race import fmt_time
-from meta.bike_tune import apply_tune
-from meta.kit import apply_kit
+from meta.bike_tune import apply_tune, xp_for_race
 from run.upgrades import apply_upgrades, offer
 from track.generator import generate
 
@@ -27,6 +30,8 @@ from track.generator import generate
 BIOMES = ("valley", "desert", "night", "stadium", "lava")
 RACES_PER_BIOME = 3                      # two normal races, then the boss
 RUN_HEATS = len(BIOMES) * RACES_PER_BIOME
+LIVES = 3                                # a missed normal race costs one ...
+BOSS_LOSS_LIVES = 2                      # ... a lost boss race two (and its elite upgrade)
 
 # Rival level (race.rival_setup, 0..1) at each generator depth. A biome's
 # normal races ride its own depth, the boss rides the next one up.
@@ -107,11 +112,13 @@ def pick_modifier(rng, i):
 
 class Target:
     def __init__(self, kind, value=None, modifier=None):
-        self.kind = kind          # "time" | "place" | "survive"
+        self.kind = kind          # "time" | "place" | "survive" | "boss" (finish ahead of the boss)
         self.value = value        # ticks for time/survive, place for place
         self.modifier = modifier
 
     def describe(self):
+        if self.kind == "boss":
+            return "TARGET: beat the boss to the line"
         if self.kind == "time":
             return f"TARGET: finish under {fmt_time(self.value)}"
         if self.kind == "place":
@@ -125,6 +132,8 @@ class Target:
     def check(self, result):
         if not result or not result.get("finished"):
             return False
+        if self.kind == "boss":
+            return bool(result.get("beat_boss"))
         if self.kind == "place":
             return result["position"] <= self.value
         return result["time"] <= self.value
@@ -148,15 +157,14 @@ class Heat:
 
 class RunState:
     def __init__(self, seed=None, vehicle="dirt", livery="flame", start_upgrades=(), mode="one",
-                 kit_levels=None, bike_levels=None):
+                 bike_levels=None):
         self.seed = seed if seed is not None else random.randrange(1 << 30)
         self.rng = random.Random(self.seed)
         self.vehicle = vehicle
         self.livery = livery
         self.mode = mode               # throttle mode the run was started in ("one" | "classic")
         self.upgrades = list(start_upgrades)
-        self.kit_levels = dict(kit_levels or {})   # Starter Kit (meta/kit.py), every heat
-        # bike tuning for this vehicle (meta/bike_tune.py); None = full stats (sims, tests)
+        # bike upgrades for this vehicle (meta/bike_tune.py); None = catalogue stats (sims, tests)
         self.bike_levels = dict(bike_levels) if bike_levels is not None else None
         self.heat_i = 0
         self.status = "active"         # active | won | lost
@@ -166,15 +174,19 @@ class RunState:
         self.bonus_coins = 0
         self.forgives_used = 0
         self.pending_offer = None
+        self.lives = LIVES
+        self.missed = False            # the last race was lost (a life gone): move on, no upgrade pick
+        self.xp = 0                    # XP the bike earned this run (banked at the end)
         self.heats = [self._plan_heat(i) for i in range(RUN_HEATS)]
 
     # -- planning -----------------------------------------------------------------
     def _plan_heat(self, i):
         seed = (self.seed * 31 + i * 7_919) & 0x3FFFFFFF
         # Every race is against rivals (solo clock runs live in Time Trial).
-        # Bosses must be won; the early biomes only ask for a podium.
+        # Bosses only have to be beaten (finish ahead of the boss, whatever your
+        # place); the early biomes only ask for a podium.
         if is_boss(i):
-            target = Target("place", 1)
+            target = Target("boss")
         elif i in MODIFIER_HEATS:
             target = Target("place", 2, pick_modifier(self.rng, i))
         else:
@@ -186,8 +198,8 @@ class RunState:
         return self.heats[self.heat_i]
 
     def base_vehicle_stats(self):
-        """The vehicle at its tuning levels with the Starter Kit fitted (before run upgrades)."""
-        return apply_kit(apply_tune(base_stats(self.vehicle), self.bike_levels), self.kit_levels)
+        """The vehicle at its upgrade levels (before run upgrades)."""
+        return apply_tune(base_stats(self.vehicle), self.bike_levels)
 
     def stats_for_heat(self, heat=None):
         heat = heat or self.heat
@@ -233,6 +245,9 @@ class RunState:
         h = self.heat
         met = h.target.check(result)
         self.results.append({"heat": h.index, "met": met, **(result or {})})
+        self.missed = False
+        if result and not result.get("forfeit"):
+            self.xp += xp_for_race(h.depth, h.boss, met, result.get("finished", False))
         if result:
             self.perfect += result.get("perfect", 0)
             self.distance_cols += result.get("distance", 0) / C.TILE_W
@@ -243,7 +258,13 @@ class RunState:
                         self.bonus_coins += 3
             self.forgives_used += result.get("forgiven", 0)
         if not met:
-            self.status = "lost"
+            quit_ = bool((result or {}).get("forfeit"))
+            if not quit_:
+                self.lives = max(0, self.lives - (BOSS_LOSS_LIVES if h.boss else 1))
+            if quit_ or self.lives <= 0 or self.heat_i == RUN_HEATS - 1:
+                self.status = "lost"
+            else:
+                self.missed = True     # on to the next race, without an upgrade pick
         elif self.heat_i == RUN_HEATS - 1:
             self.status = "won"
         else:
@@ -259,7 +280,14 @@ class RunState:
     def biome_i(self):
         return biome_of(self.heat_i)
 
+    def move_on(self):
+        """After a lost race (with lives left): straight on to the next race."""
+        self.missed = False
+        self.pending_offer = None
+        self.heat_i += 1
+
     def biomes_cleared(self):
+        """Bosses beaten (a boss you lost to and rode on from doesn't count)."""
         return sum(1 for r in self.results if r["met"] and is_boss(r["heat"]))
 
     def choose(self, upgrade_id):

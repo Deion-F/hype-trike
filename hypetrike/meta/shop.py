@@ -1,22 +1,24 @@
-"""Meta-shop catalogue (spec §6.3). Vehicles trade strengths and liveries are
-cosmetic (sidegrades, decision Q8). The Starter Kit is the one place coins buy
-lasting power: small levelled steps (meta/kit.py) that apply to every run. Biomes (track themes) aren't sold:
-a run tours them all, and quick races and the editor can use any of them."""
+"""Meta-shop catalogue (spec §6.3). Coins only buy cosmetics: bike paints, rider
+colours and boost colours. Power comes from each bike's own XP (meta/bike_tune.py),
+and new vehicles unlock as runs get deeper (VEHICLE_UNLOCKS). Biomes (track
+themes) aren't sold: a run tours them all, and quick races and the editor can use
+any of them."""
 from bike import VEHICLES
-from meta.kit import KIT, MAX_LEVEL
 from ui.art import LIVERIES, BOOSTS
 
 # kind -> profile list key
 # Rider colours share ownership with bike paints: buy a scheme once, use it on either.
 KIND_KEY = {"vehicle": "vehicles", "livery": "liveries", "rider": "liveries", "boost": "boosts"}
 SELECT_KEY = {"vehicle": "vehicle", "livery": "livery", "rider": "rider", "boost": "boost"}
+COSMETIC_KINDS = ("livery", "rider", "boost")
 
 PRICES = {
-    "vehicle": {"dirt": 0, "trike": 300, "scrambler": 450, "sprinter": 650},
     "livery": {"flame": 0, "ocean": 60, "lime": 60, "violet": 90, "gold": 150, "ghost": 220},
     "boost": {"flame": 0, "plasma": 100, "toxic": 100, "neon": 120, "gold": 160, "ghost": 200},
 }
 PRICES["rider"] = PRICES["livery"]
+# Vehicles unlock by clearing biomes in a run (profile "best_biome"), not with coins.
+VEHICLE_UNLOCKS = {"dirt": 0, "trike": 1, "scrambler": 2, "sprinter": 3}
 # What the one-off starting upgrades used to cost; saves that bought them are refunded once.
 OLD_KIT_PRICES = {"cool_head": 140, "gyro": 140, "soft_shocks": 180, "track_boots": 120,
                   "radiator": 140, "sponsor": 200, "all_terrain": 160, "quick_steer": 150}
@@ -24,19 +26,33 @@ OLD_KIT_PRICES = {"cool_head": 140, "gyro": 140, "soft_shocks": 180, "track_boot
 OLD_THEME_PRICES = {"desert": 100, "night": 150, "stadium": 200, "lava": 250}
 
 
-def kit_level(profile, item_id):
-    return int(profile.data.get("kit_levels", {}).get(item_id, 0))
+def unlock_text(vehicle):
+    from run.manager import BIOMES
+    from ui.art import THEMES
+    n = VEHICLE_UNLOCKS[vehicle]
+    if n <= 0:
+        return ""
+    return f"Clear the {THEMES[BIOMES[n - 1]]['name']} in a run to unlock"
 
 
-def catalogue(kind, mode="one"):
-    if kind == "kit":
-        return [{"id": it.id, "name": it.name, "category": it.category, "desc": it.describe(MAX_LEVEL),
-                 "price": None} for it in KIT.values()]
+def check_vehicle_unlocks(profile):
+    """Unlock every vehicle the profile's best run has earned. Returns the new ones."""
+    new = []
+    for v, need in VEHICLE_UNLOCKS.items():
+        if need <= profile.data.get("best_biome", 0) and v not in profile.data["vehicles"]:
+            profile.unlock("vehicles", v)
+            new.append(v)
+    return new
+
+
+def catalogue(kind):
     items = []
+    if kind == "vehicle":
+        for v in VEHICLES:
+            items.append({"id": v, "name": VEHICLES[v]["name"], "desc": VEHICLES[v]["desc"], "price": None})
+        return items
     for item_id, price in PRICES[kind].items():
-        if kind == "vehicle":
-            name, desc = VEHICLES[item_id]["name"], VEHICLES[item_id]["desc"]
-        elif kind == "livery":
+        if kind == "livery":
             name, desc = LIVERIES[item_id]["name"], "Bike paint. Also unlocks these colours for your rider."
         elif kind == "rider":
             name, desc = LIVERIES[item_id]["name"], "Rider suit and helmet. Shares unlocks with bike paints."
@@ -46,35 +62,24 @@ def catalogue(kind, mode="one"):
     return items
 
 
-def buy_kit_level(profile, item_id):
-    """Spend coins on the next Starter Kit level. Returns True on success."""
-    level = kit_level(profile, item_id)
-    price = KIT[item_id].price(level)
-    if price is None or not profile.spend(price):
-        return False
-    profile.data.setdefault("kit_levels", {})[item_id] = level + 1
-    profile.save()
-    return True
-
-
-def buy_tune_level(profile, vehicle, stat_id):
-    """Spend coins on the next tuning level of one stat of one owned vehicle."""
+def buy_upgrade(profile, vehicle, up_id):
+    """Spend a bike's XP on the next level of one of its upgrades."""
     from meta.bike_tune import price
     if vehicle not in profile.data["vehicles"]:
         return False
     levels = profile.bike_levels(vehicle)
-    cost = price(vehicle, stat_id, levels.get(stat_id, 0))
-    if cost is None or not profile.spend(cost):
+    cost = price(vehicle, up_id, levels.get(up_id, 0))
+    if cost is None or not profile.spend_xp(vehicle, cost):
         return False
-    levels[stat_id] = levels.get(stat_id, 0) + 1
+    levels[up_id] = levels.get(up_id, 0) + 1
     profile.save()
     return True
 
 
 def buy(profile, kind, item_id):
-    """Spend coins and unlock. Returns True on success."""
-    if kind == "kit":
-        return buy_kit_level(profile, item_id)
+    """Spend coins on a cosmetic and unlock it. Returns True on success."""
+    if kind not in COSMETIC_KINDS:
+        return False
     key = KIND_KEY[kind]
     if item_id in profile.data[key]:
         return False

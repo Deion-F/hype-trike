@@ -57,6 +57,7 @@ class BikeStats:
     explode_ticks: int = C.EXPLODE_EXTRA_TICKS  # extra crash time for a blow-up
     perfect_heat: float = 0.0          # perfect landing: +heat (one-button) / -heat (classic)
     rough_loss_mult: float = 1.0       # share of the rough-landing speed / heat loss taken
+    perfect_shield: bool = False       # Pro Suspension: a perfect landing makes the next rough one free
     lane_rate: float = C.LANE_CHANGE_RATE
     respawn_heat: float = 0.0          # one-button: heat after recovering from a crash
     # run-upgrade mechanics (see run/upgrades.py)
@@ -64,7 +65,8 @@ class BikeStats:
     land_saves: int = 0                # Crumple Zone: crash landings turned rough, per race
     adrenaline_ticks: int = 0          # Adrenaline: red zone heats slower for this long after a perfect
     comeback_ticks: int = 0            # Comeback: double acceleration this long after remounting
-    draft_bonus: float = 0.0           # Slipstream: top-speed share while a rival is just ahead
+    draft_bonus: float = 0.0           # Slipstream upgrade: extra top-speed share in a slipstream ...
+    draft_range: float = 0.0           # ... and px added to the slipstream pocket's length
     lane_kick: float = 0.0             # Line Choice: speed kick per finished lane change
     barrier_saves: int = 0             # Barrier Buster: barriers smashed instead of crashing, per race
     prize_coins: int = 0               # Prize Money: coins per race won this run
@@ -132,7 +134,7 @@ class Bike:
         self._grace = 0                  # ticks of throttle grace left after letting go
         self.in_grace = False
         self._one_button = False         # one-button throttle: heat drives speed (player option)
-        self.boost_level = 0             # 0 none, 1 boost/turbo, 2 super boost (for effects/HUD)
+        self.boost_level = 0             # 0 none, 1 boost/turbo (warm), 2 hot, 3 overheating (effects/HUD)
         self.crash_total = self.stats.crash_ticks
         self._coast_acc = 0
         self._drag_acc = 0
@@ -145,8 +147,9 @@ class Bike:
         self._perfect_grace = 0          # ticks left of "was lined up for a PERFECT just now"
         self.barrier_saves_left = self.stats.barrier_saves
         self.adrenaline = 0              # ticks of Adrenaline left
+        self.rough_shield = False        # Pro Suspension: the next rough landing is free (banked by a perfect)
         self.comeback = 0                # ticks of Comeback left
-        self.drafting = False            # set by the race: a rival is just ahead in this lane
+        self.drafting = False            # set by the race: in another rider's slipstream
         self.air_lane_lock = True        # setting: no new lane changes in the air (one in progress finishes)
         self._hoop_armed = False         # flew through a flaming hoop on this jump
         self.trail = None                # set by the race: the boss trail kind we're riding in ...
@@ -168,32 +171,52 @@ class Bike:
             self.temp = 0.0
         self._one_button = bool(on)
 
+    # Heat zones (one-button): 0 cold, 1 warm, 2 hot, 3 overheating. See config.py.
+    def heat_zone(self):
+        """Which heat zone the engine is in (one-button); classic mode is always 0/1."""
+        t = self.temp
+        if t < C.ONE_BOOST_AT:
+            return 0
+        if t < C.ONE_HOT_AT:
+            return 1
+        return 2 if t < C.ONE_OVERHEAT_AT else 3
+
     def heat_speed(self):
         """One-button mode: the top speed the current heat allows (before grip)."""
         s, t = self.stats, self.temp
         if t < C.ONE_BOOST_AT:
             return s.max_speed_a * max(0.0, t) / C.ONE_BOOST_AT
-        if t < C.ONE_SUPER_AT:
-            return s.max_speed_b * self._draft()
         return (s.max_speed_b + self._overheat_bonus()) * self._draft()
 
     def overheat_depth(self):
         """How deep into the overheating zone the heat is: 0 at its edge .. 1 at the
         blow-up; None below it (and in classic mode, which has no such zone)."""
-        if not self.one_button or self.temp < C.ONE_SUPER_AT:
+        if not self.one_button or self.temp < C.ONE_OVERHEAT_AT:
             return None
-        return min(1.0, (self.temp - C.ONE_SUPER_AT) / (C.TEMP_OVERHEAT - C.ONE_SUPER_AT))
+        return min(1.0, (self.temp - C.ONE_OVERHEAT_AT) / (C.TEMP_OVERHEAT - C.ONE_OVERHEAT_AT))
+
+    def _zone(self):
+        return self.heat_zone() if self.one_button else 0
 
     def _overheat_bonus(self):
-        """Top speed over the boost band while overheating: grows with depth, from
-        OVERHEAT_SPEED_LO x super_extra at the edge to OVERHEAT_SPEED_HI x at the top."""
-        k = self.overheat_depth() or 0.0
-        return self.stats.super_extra * (C.OVERHEAT_SPEED_LO + (C.OVERHEAT_SPEED_HI - C.OVERHEAT_SPEED_LO) * k)
+        """Top speed over turbo in the hot and overheating zones: a set step when hot,
+        then OVERHEAT_SPEED_LO..HI x super_extra across the overheating zone."""
+        z = self._zone()
+        if z == 2:
+            return self.stats.super_extra * C.HOT_SPEED_K
+        if z == 3:
+            k = self.overheat_depth() or 0.0
+            return self.stats.super_extra * (C.OVERHEAT_SPEED_LO + (C.OVERHEAT_SPEED_HI - C.OVERHEAT_SPEED_LO) * k)
+        return 0.0
 
     def _pitch_rate(self):
-        """Air rotation rate: a set boost while overheating (heat holds in the air,
-        so it lasts the whole jump)."""
-        return self.stats.pitch_rate * (C.OVERHEAT_TURN if self.overheat_depth() is not None else 1.0)
+        """Air rotation rate: quicker when hot, quicker still overheating (heat holds
+        in the air, so it lasts the whole jump)."""
+        return self.stats.pitch_rate * {2: C.HOT_TURN, 3: C.OVERHEAT_TURN}.get(self._zone(), 1.0)
+
+    def _land_mult(self):
+        """Landing windows: the boss Hex aura, and a burning bike lands narrower."""
+        return self.land_mult * (C.OVERHEAT_LAND if self._zone() == 3 else 1.0)
 
     def climbing(self):
         """On the ground going up a ramp / rise: the engine doesn't heat here, so
@@ -201,13 +224,13 @@ class Bike:
         return not self.airborne and self.track.slope(self.x, self.lane_index) > C.CLIMB_SLOPE
 
     def _draft(self):
-        return 1.0 + self.stats.draft_bonus if self.drafting else 1.0
+        return 1.0 + C.SLIP_SPEED + self.stats.draft_bonus if self.drafting else 1.0
 
     def _accel_interval(self):
-        """Comeback: double acceleration for a while after remounting. Overheating:
-        quicker the deeper in (up to OVERHEAT_ACCEL faster at the top)."""
-        k = self.overheat_depth() or 0.0
-        return self.stats.accel_interval * (0.5 if self.comeback > 0 else 1.0) * (1.0 - C.OVERHEAT_ACCEL * k)
+        """Comeback: double acceleration for a while after remounting. Hot and
+        overheating: quicker (HOT_ACCEL, OVERHEAT_ACCEL)."""
+        quick = {2: C.HOT_ACCEL, 3: C.OVERHEAT_ACCEL}.get(self._zone(), 0.0)
+        return self.stats.accel_interval * (0.5 if self.comeback > 0 else 1.0) * (1.0 - quick)
 
     def _red_mult(self):
         """Heating rate multiplier in the red; Adrenaline slows it after a perfect landing."""
@@ -261,8 +284,8 @@ class Bike:
         err = self.landing_error()
         if err is None:
             return None
-        per = self.stats.land_perfect * self.land_mult
-        tol = self.stats.land_tolerance * self.land_mult
+        per = self.stats.land_perfect * self._land_mult()
+        tol = self.stats.land_tolerance * self._land_mult()
         rough = C.LAND_ROUGH if err > 0 else C.LAND_ROUGH_NOSE
         e = abs(err)
         if e <= per:
@@ -368,9 +391,7 @@ class Bike:
     def _boost_from(self, ctl):
         """0/1/2 boost level for this tick. One-button mode: from the heat alone."""
         if self.one_button:
-            if self.temp >= C.ONE_SUPER_AT:
-                return 2
-            return 1 if self.temp >= C.ONE_BOOST_AT else 0
+            return self.heat_zone()
         if not (ctl.a or ctl.b):
             return 0
         return 1 if ctl.b else 0
@@ -390,7 +411,7 @@ class Bike:
         held = ctl.a or ctl.b
         holding = held or self.in_grace
         cap = self.max_speed(turbo) if held else self.max_speed(False) if holding else 0
-        if self.boost_level == 2:
+        if self.boost_level >= 2:
             cap += self._overheat_bonus() * self.grip()
         if self.track.surface_at(self.lane_index, self.x) == MUD or self.trail == "mud":
             cap = min(cap, self._mud_cap()) if holding else 0
@@ -466,21 +487,28 @@ class Bike:
             if ctl.a or ctl.b:
                 return
         hot, cool = self._env()
-        if (self.airborne or self.climbing() or self._sand_stall()) and (ctl.a or ctl.b):
+        # A cold engine still warms up on a climb: heat is speed here, so a bike stopped
+        # on a slope (a respawn at the foot of a ramp) would otherwise never move again.
+        climb = self.climbing() and self.temp >= C.ONE_BOOST_AT
+        if (self.airborne or climb or self._sand_stall()) and (ctl.a or ctl.b):
             pass                     # holding in the air or up a ramp keeps your heat, never adds to it
         elif ctl.a or ctl.b:
+            if self.drafting:
+                hot *= C.SLIP_HEAT_MULT          # in a slipstream: the engine heats (speeds up) faster
             if self.temp < C.ONE_BOOST_AT:
                 comeback = 2.0 if self.comeback > 0 else 1.0     # Comeback: warm up fast after a crash
                 self.temp += s.heat_a * C.ONE_COLD_HEAT_MULT * s.warmup_mult * hot * comeback
             else:
-                self.temp += s.heat_b * hot * (self._red_mult() if self.temp >= C.ONE_SUPER_AT else 1.0)
+                z = self.heat_zone()
+                zone_mult = (C.WARM_HEAT_MULT, C.HOT_HEAT_MULT, C.OVERHEAT_HEAT_MULT)[z - 1]
+                self.temp += s.heat_b * hot * zone_mult * (self._red_mult() if z >= 2 else 1.0)
         elif self.temp > 0:
             self.temp = max(0.0, self.temp - (s.cool_coast + s.passive_cool) * cool)
         self._check_blowup(ev)
 
     def _check_blowup(self, ev):
         """One-button: at the top of the gauge the bike blows, unless a vent is left."""
-        if self.temp >= C.TEMP_OVERHEAT and not self._vent(ev, C.ONE_SUPER_AT - C.VENT_DROP):
+        if self.temp >= C.TEMP_OVERHEAT and not self._vent(ev, C.ONE_HOT_AT - C.VENT_DROP):
             self.temp = C.TEMP_OVERHEAT
             self._explode(ev)
 
@@ -621,7 +649,7 @@ class Bike:
             # ticks, so a tiny last-moment twitch doesn't throw it away.
             slope_deg = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
             if self.h - g <= C.PERFECT_GRACE_PX and \
-                    abs(self.angle - slope_deg) <= self.stats.land_perfect * self.land_mult:
+                    abs(self.angle - slope_deg) <= self.stats.land_perfect * self._land_mult():
                 self._perfect_grace = C.PERFECT_GRACE_TICKS
             elif self._perfect_grace > 0:
                 self._perfect_grace -= 1
@@ -650,7 +678,8 @@ class Bike:
 
     def _land(self, ev):
         s = self.stats
-        tol, per = s.land_tolerance * self.land_mult, s.land_perfect * self.land_mult   # Hex aura
+        lm = self._land_mult()                                  # Hex aura, overheating
+        tol, per = s.land_tolerance * lm, s.land_perfect * lm
         self.stats_counters["landings"] += 1
         here = self.track.terrain_at(self.x, self.lane_index)
         if here in PITS:
@@ -690,13 +719,15 @@ class Bike:
                 perfect = abs(err) <= per or graced
                 self.speed += C.HOOP_BOOST + (C.HOOP_PERFECT_EXTRA if perfect else 0)
                 if self.one_button:      # keep the engine in the boost band so it doesn't just fade
-                    self.temp = min(C.ONE_SUPER_AT - 0.5, max(self.temp, C.ONE_BOOST_AT + 3))
+                    self.temp = max(self.temp, C.ONE_BOOST_AT + 3)     # (never lowers a hot engine)
                 ev.append(("hoop_boost", perfect))
             else:
                 ev.append(("hoop_lost",))
         if abs(err) <= per or graced:
             self.stats_counters["perfect"] += 1
             self.adrenaline = max(self.adrenaline, s.adrenaline_ticks)
+            if s.perfect_shield:
+                self.rough_shield = True
             if s.perfect_heat:
                 # Hype Landing: a heat kick in one-button mode (never past the top),
                 # a cool-down in classic mode.
@@ -708,9 +739,16 @@ class Bike:
         elif abs(err) <= tol:
             ev.append(("land",))
         elif -C.LAND_ROUGH_NOSE <= err <= C.LAND_ROUGH:
+            self.stats_counters["rough"] += 1
+            if self.rough_shield:
+                # Pro Suspension: the perfect landing before this one soaks it up
+                self.rough_shield = False
+                ev.append(("rough_free",))
+                self.angle = slope_deg
+                self.vy = 0.0
+                return
             self.speed *= 1.0 - (1.0 - C.ROUGH_SPEED_KEEP) * s.rough_loss_mult
             self.wobble = C.ROUGH_WOBBLE_TICKS
-            self.stats_counters["rough"] += 1
             if self.one_button:
                 # heat is speed here: a sloppy landing dumps heat, so landing
                 # well is how you keep your boost

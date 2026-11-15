@@ -167,7 +167,7 @@ def aggregate(items):
             "perfect_rate": round(sum(s.get("perfect", 0) for s in S) / land, 2),
             "rough_rate": round(sum(s.get("rough", 0) for s in S) / land, 2),
             "boost_share": round(sum(s.get("boost_share", [0, 0, 0])[1] for s in S) / n, 2),
-            "super_share": round(sum(s.get("boost_share", [0, 0, 0])[2] for s in S) / n, 2),
+            "super_share": round(sum(sum(s.get("boost_share", [0, 0, 0])[2:]) for s in S) / n, 2),
             "avg_speed": round(sum(s.get("avg_speed", 0) for s in S) / n, 1),
             "rival_crashes_per_race": round(sum(sum(r.get("crashes", 0) + r.get("explodes", 0)
                                                     for r in s.get("rivals", [])) for s in S) / n, 2),
@@ -313,7 +313,7 @@ class ButtonPilot:
 
 def make_pilot(ai, mode, skill, controls="button"):
     """The simulated player: one-button heat keeping, then the control scheme."""
-    pilot = OneButtonPilot(ai, C.ONE_SUPER_AT - 1 + 2 * skill) if mode == "one" else ai
+    pilot = OneButtonPilot(ai, C.ONE_HOT_AT - 1 + 2 * skill) if mode == "one" else ai
     return ButtonPilot(pilot, skill) if controls == "button" else pilot
 
 
@@ -347,7 +347,7 @@ def sim_run(seed, tier, mode, learning=False, controls="button", landings=None):
                     if e[0] in LANDING_EVENTS:
                         landings[e[0] if e[0] != "crash" else "crash"] += 1
         res = {"finished": race.finished, "time": race.time_ticks, "position": race.position(),
-               "perfect": race.bike.stats_counters["perfect"], "distance": race.bike.x}
+               "beat_boss": race.beat_boss(), "perfect": race.bike.stats_counters["perfect"], "distance": race.bike.x}
         out.append({"heat": i, "met": h.target.check(res), "position": res["position"],
                     "crashes": race.bike.stats_counters["crashes"]})
         o = r.offer_after(i)
@@ -481,7 +481,8 @@ def modsim(seeds, mode="one", tiers=("average", "learning"), controls="button"):
                     pilot = make_pilot(ai, mode, skill, controls)
                     while not race.finished and race.time_ticks < 60 * 300:
                         race.step(pilot.controls(race.bike))
-                    out = {"finished": race.finished, "time": race.time_ticks, "position": race.position()}
+                    out = {"finished": race.finished, "time": race.time_ticks, "position": race.position(),
+                           "beat_boss": race.beat_boss()}
                     res[m]["met"].append(1.0 if h.target.check(out) else 0.0)
                     res[m]["place"].append(1.0 - (out["position"] - 1) / max(1, h.rivals))
                     res[m]["crashes"].append(race.bike.stats_counters["crashes"])

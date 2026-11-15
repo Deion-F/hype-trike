@@ -119,29 +119,34 @@ def temp_gauge(surf, temp, x, y, w=150, h=10, ticks=0):
 
 
 def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
-    """One-button heat gauge, 0..blow-up: normal | BOOST band | OVERHEATING window."""
+    """One-button heat gauge, 0..blow-up: cold | WARM | HOT | OVERHEATING."""
     panel(surf, (x - 4, y - 16, w + 8, h + 22), 150)
     full = C.TEMP_OVERHEAT
     px = lambda t: x + int(w * max(0.0, min(full, t)) / full)        # noqa: E731
-    b0, s0 = px(C.ONE_BOOST_AT), px(C.ONE_SUPER_AT)
+    b0, s0, o0 = px(C.ONE_BOOST_AT), px(C.ONE_HOT_AT), px(C.ONE_OVERHEAT_AT)
     surf.fill((40, 36, 52), (x, y, w, h))
-    surf.fill((86, 62, 40), (b0, y, s0 - b0, h))                      # boost band
-    surf.fill((110, 30, 36), (s0, y, x + w - s0, h))                  # red window
+    surf.fill((86, 62, 40), (b0, y, s0 - b0, h))                      # warm band
+    surf.fill((110, 50, 30), (s0, y, o0 - s0, h))                     # hot
+    surf.fill((110, 30, 36), (o0, y, x + w - o0, h))                  # overheating
     if temp < C.ONE_BOOST_AT:
         col = C.GOOD
-    elif temp < C.ONE_SUPER_AT:
-        col = (255, 150, 50)
+    elif temp < C.ONE_HOT_AT:
+        col = (255, 190, 70)
+    elif temp < C.ONE_OVERHEAT_AT:
+        col = (255, 120, 40)
     else:
         col = C.DANGER if (ticks // 4) % 2 == 0 else (255, 230, 200)
     surf.fill(col, (x, y, px(temp) - x, h))
     surf.fill((250, 250, 250), (b0, y - 2, 1, h + 4))
-    pygame.draw.rect(surf, C.DANGER, (s0, y - 1, x + w - s0, h + 2), 1)
-    label = {0: ("HEAT", C.HUD_FG), 1: ("BOOST", (255, 170, 70)), 2: ("OVERHEATING!", C.DANGER)}
+    surf.fill((250, 250, 250), (s0, y - 2, 1, h + 4))
+    pygame.draw.rect(surf, C.DANGER, (o0, y - 1, x + w - o0, h + 2), 1)
+    label = {0: ("COLD", C.HUD_FG), 1: ("WARM", (255, 190, 70)), 2: ("HOT", (255, 130, 40)),
+             3: ("OVERHEATING!", C.DANGER)}
     s, c = label.get(boost_level, label[0])
     text(surf, s, (x, y - 14), 16, c)
 
 
-def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=False):
+def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=False, speed=False):
     b = race.bike
     panel(surf, (6, 6, 150, 40))
     lap = min(race.laps_done + 1, race.track.laps)
@@ -167,9 +172,10 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=Fals
             heat_gauge_one(surf, b.temp, lvl, gx, C.VIEW_H - 18, ticks=ticks)
         else:
             temp_gauge(surf, b.temp, gx, C.VIEW_H - 18, ticks=ticks)
-    panel(surf, (width // 2 - 26, C.VIEW_H - 36, 52, 32), 150)
-    text(surf, "SPD", (width // 2, C.VIEW_H - 28), 12, anchor="center")
-    text(surf, f"{int(b.speed):02d}", (width // 2, C.VIEW_H - 13), 22, anchor="center")
+    if speed:                   # speed readout: off by default (heat is the gauge), a testing option
+        panel(surf, (width // 2 - 26, C.VIEW_H - 36, 52, 32), 150)
+        text(surf, "SPD", (width // 2, C.VIEW_H - 28), 12, anchor="center")
+        text(surf, f"{int(b.speed):02d}", (width // 2, C.VIEW_H - 13), 22, anchor="center")
     if b.state == "overheat" and (ticks // 10) % 2 == 0:
         text(surf, "OVERHEAT!", (width // 2, 120), 40, C.DANGER, anchor="center")
     if race.countdown > 0:
@@ -177,3 +183,72 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=Fals
         text(surf, str(n), (width // 2, 120), 72, C.ACCENT, anchor="center")
     elif race.time_ticks < 45:
         text(surf, "GO!", (width // 2, 120), 72, C.GOOD, anchor="center")
+
+
+# -- run upgrades worn in the race ----------------------------------------------------
+# Upgrades with charges per race (or per run) are drawn as round tokens with a pip
+# per charge (spent pips go dark); the rest are square badges with xN when stacked.
+CHARGES = {                    # upgrade id -> (bike counter left, stats field for the total)
+    "barrier_buster": ("barrier_saves_left", "barrier_saves"),
+    "paddle_tyres": ("barrier_saves_left", "barrier_saves"),
+    "crumple_zone": ("land_saves_left", "land_saves"),
+    "pro_suspension": ("land_saves_left", "land_saves"),
+    "blow_off": ("vents_left", "vent_charges"),
+    "twin_radiators": ("vents_left", "vent_charges"),
+    "second_wind": ("forgives_left", "crash_forgives"),
+    "factory_rider": ("forgives_left", "crash_forgives"),
+}
+ICON = 22
+
+
+def _initials(name):
+    words = [w for w in name.replace("-", " ").split() if w]
+    return (words[0][:2] if len(words) == 1 else words[0][0] + words[1][0]).upper()
+
+
+def upgrade_icons(surf, ids, bike, right, top, bottom, mode="one", names=False):
+    """A column of icons down the right edge (wrapping leftwards past `bottom`)
+    for the run upgrades in `ids`. names: label each (pause screen)."""
+    from run.upgrades import UPGRADES, CATEGORY_COLORS
+    counts = {}
+    for u in ids:
+        if u in UPGRADES:
+            counts[u] = counts.get(u, 0) + 1
+    if not counts:
+        return
+    step = ICON + 4
+    per_col = max(1, (bottom - top) // step)
+    for i, (uid, n) in enumerate(counts.items()):
+        up = UPGRADES[uid]
+        col, row = divmod(i, per_col)
+        x = right - ICON - col * (step + (110 if names else 0))
+        y = top + row * step
+        colr = CATEGORY_COLORS.get(up.category, C.GOOD)
+        elite = up.tier == "elite"
+        edge = (255, 206, 80) if elite else (20, 16, 28)
+        if uid in CHARGES:
+            left_attr, total_attr = CHARGES[uid]
+            left = getattr(bike, left_attr, 0)
+            total = max(1, getattr(bike.stats, total_attr, 1))
+            c = (x + ICON // 2, y + ICON // 2)
+            dim = left <= 0
+            pygame.draw.circle(surf, edge, c, ICON // 2 + 1)
+            pygame.draw.circle(surf, (90, 86, 104) if dim else colr, c, ICON // 2 - 1)
+            pygame.draw.circle(surf, (20, 16, 28), c, ICON // 2 - 4, 1)
+            text(surf, _initials(up.title(mode)), c, 12, (20, 16, 28), anchor="center", shadow=False)
+            for k in range(min(total, 4)):                   # charges left
+                px = x + ICON // 2 + (k - (min(total, 4) - 1) / 2) * 6
+                pygame.draw.circle(surf, (20, 16, 28), (int(px), y + ICON + 1), 3)
+                pygame.draw.circle(surf, (255, 240, 200) if k < left else (70, 64, 88), (int(px), y + ICON + 1), 2)
+        else:
+            r = pygame.Rect(x, y, ICON, ICON)
+            pygame.draw.rect(surf, edge, r.inflate(2, 2), border_radius=5)
+            pygame.draw.rect(surf, colr, r, border_radius=4)
+            text(surf, _initials(up.title(mode)), r.center, 12, (20, 16, 28), anchor="center", shadow=False)
+            if n > 1:
+                text(surf, f"x{n}", (r.right + 2, r.bottom + 2), 12, C.HUD_FG, anchor="bottomright")
+        if uid == "pro_suspension" and getattr(bike, "rough_shield", False):
+            # a free rough landing banked (by a perfect): a bright ring round the token
+            pygame.draw.circle(surf, (140, 230, 255), (x + ICON // 2, y + ICON // 2), ICON // 2 + 3, 2)
+        if names:
+            text(surf, up.title(mode), (x - 4, y + ICON // 2), 12, C.HUD_FG, anchor="midright")

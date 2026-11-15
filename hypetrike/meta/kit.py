@@ -1,10 +1,7 @@
-"""Starter Kit: permanent meta-progression for runs.
-
-Every kit item starts at level 0 and is bought up one small step at a time,
-each level dearer than the last, to MAX_LEVEL. All owned levels apply to every
-run (nothing to equip). The top level matches what the old one-off starting
-upgrade gave. No kit item repeats a run upgrade (run/upgrades.py): the kit is
-plain stat steps, the run pool is mechanics.
+"""Starter Kit: levelled stat steps, now used only by CPU rivals (race.rival_kit
+spreads a budget of levels over these items). The player's equivalents are
+per-bike XP upgrades (meta/bike_tune.py); old saves' kit levels were converted
+into those. Prices remain for that one-off conversion (Sponsor Deal refund).
 """
 from dataclasses import dataclass
 

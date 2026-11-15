@@ -169,17 +169,36 @@ class Race:
                 place += 1
         return place
 
+    def slipstream_of(self, b):
+        """The rider whose slipstream bike b is tucked into (a short pocket right
+        behind them in the same lane, both on the ground), or None."""
+        if b.state != "ride" or b.airborne:
+            return None
+        reach = C.SLIP_RANGE + b.stats.draft_range
+        best = None
+        for rb in self.rivals:
+            gap = rb.x - b.x
+            if (rb.state == "ride" and not rb.airborne and 0 < gap < reach
+                    and abs(rb.lane_pos - b.lane_pos) < C.SLIP_LANE and (best is None or gap < best[0])):
+                best = (gap, rb)
+        return best[1] if best else None
+
+    def beat_boss(self):
+        """Boss race: the player crossed the line ahead of the boss (None: no boss)."""
+        if not self.boss:
+            return None
+        if not self.finished:
+            return False
+        fin = self.rival_finish[self.boss_i]
+        return fin is None or self.finish_ticks < fin
+
     def step(self, ctl: Controls):
         self.last_rival_events = []
         if self.countdown > 0:
             self.countdown -= 1
             return [("go",)] if self.countdown == 0 else []
         self.time_ticks += 1
-        if self.bike.stats.draft_bonus:
-            # Slipstream: a rival less than two sections ahead in your lane
-            b = self.bike
-            self.bike.drafting = any(rb.lane_index == b.lane_index and 0 < rb.x - b.x < 2 * C.TILE_W
-                                     and rb.state == "ride" for rb in self.rivals)
+        self.bike.drafting = self.slipstream_of(self.bike) is not None
         boss_bike = self.rivals[self.boss_i] if self.boss else None
         if self.brain is not None:
             self.brain.player_mods(self, boss_bike)

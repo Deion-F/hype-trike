@@ -49,6 +49,12 @@ def _add(attr, v):
     return f
 
 
+def _set(attr, v):
+    def f(s):
+        setattr(s, attr, v)
+    return f
+
+
 def _both(*fs):
     def f(s):
         for g in fs:
@@ -102,9 +108,9 @@ _reg(Upgrade("cryo_pads", "Cryo Pads", "Heat", "Coolant pads also freeze heat fo
              name_one="Pad Lock", desc_one="Heat pads lock your heat for 1.5 s: surf the boost"),
      _add("coolant_chill", 90))
 _reg(Upgrade("slipstream", "Slipstream", "Engine",
-             "+5% top speed while a rival is less than two sections ahead in your lane",
+             "Bigger slipstream behind rivals: +5% more top speed in it, and it reaches a section further",
              max_stacks=2),
-     _add("draft_bonus", 0.05))
+     _both(_add("draft_bonus", 0.05), _add("draft_range", C.TILE_W)))
 
 # --- Air: jumps and landings ------------------------------------------------------------
 _reg(Upgrade("hang_time", "Hang Time", "Air",
@@ -176,9 +182,9 @@ _reg(Upgrade("twin_radiators", "Twin Radiators", "Heat",
              desc_one="Twice per race, a blow-up vents the engine back to boost instead"),
      _add("vent_charges", 2))
 _reg(Upgrade("pro_suspension", "Pro Suspension", "Air",
-             "Rough landings cost nothing, and twice per race a crash landing is only rough",
-             max_stacks=1, tier=ELITE),
-     _both(_mul("rough_loss_mult", 0.0), _add("land_saves", 2)))
+             "A perfect landing makes your next rough landing free, and twice per race a crash landing "
+             "is only rough", max_stacks=1, tier=ELITE),
+     _both(_set("perfect_shield", True), _add("land_saves", 2)))
 _reg(Upgrade("flight_computer", "Flight Computer", "Air",
              "Nose drops 70% slower in the air, and clean landings turn airtime into speed (+3/s)",
              max_stacks=1, tier=ELITE),

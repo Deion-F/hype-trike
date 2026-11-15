@@ -146,9 +146,9 @@ def one_button_bike():
 def test_one_button_starts_cold_and_boosts_within_about_two_seconds():
     b = one_button_bike()
     assert b.temp == 0.0
-    run(b, Controls(a=True), 60)
+    run(b, Controls(a=True), 20)
     assert b.boost_level == 0 and 0 < b.speed < C.SPEED_MAX_A
-    t = 60
+    t = 20
     while b.boost_level == 0:
         run(b, Controls(a=True), 1)
         t += 1
@@ -174,9 +174,9 @@ def test_one_button_speed_follows_heat():
     # Letting go: heat and speed fall together, both reach zero.
     b.temp = C.ONE_BOOST_AT
     b.speed = C.SPEED_MAX_A
-    run(b, Controls(), C.THROTTLE_GRACE_TICKS + 120)
+    run(b, Controls(), C.THROTTLE_GRACE_TICKS + 40)
     assert 0 < b.temp < C.ONE_BOOST_AT
-    assert abs(b.speed - b.heat_speed()) <= 1.5    # speed tracks heat on the way down
+    assert b.heat_speed() <= b.speed < C.SPEED_MAX_A * 0.6     # speed follows heat down (coasting behind it)
     run(b, Controls(), 400)
     assert b.temp == 0 and b.speed == 0
 
@@ -228,23 +228,15 @@ def test_one_button_pads_are_heat_pads_in_three_sizes():
             raise AssertionError(f"never reached the {ch} pad")
 
 
-def test_super_boost_is_the_top_three_heat_bars():
-    assert abs(C.TEMP_OVERHEAT - C.ONE_SUPER_AT - 3 * C.HEAT_BAR) < 1e-9
+def test_heat_zones_sit_on_whole_bars():
     assert abs(C.HEAT_BAR * C.HEAT_BARS - C.TEMP_OVERHEAT) < 1e-9
+    for edge in (C.ONE_BOOST_AT, C.ONE_HOT_AT, C.ONE_OVERHEAT_AT):
+        assert abs(edge / C.HEAT_BAR - round(edge / C.HEAT_BAR)) < 1e-9
     b = Bike(flat(20)); b.one_button = True
-    b.temp = C.ONE_SUPER_AT - 0.01
-    assert b._boost_from(Controls()) == 1
-    b.temp = C.ONE_SUPER_AT
-    assert b._boost_from(Controls()) == 2
-
-
-def test_heat_arc_shows_three_red_bars():
-    import pygame
-    from ui.render import WorldRenderer
-    rd = WorldRenderer(640)
-    n = rd.HEAT_ARC_SEGS
-    red = [i for i in range(n) if (i + 0.5) * C.TEMP_OVERHEAT / n >= C.ONE_SUPER_AT]
-    assert red == [n - 3, n - 2, n - 1]
+    for temp, zone in ((0.5, 0), (C.ONE_BOOST_AT, 1), (C.ONE_HOT_AT - 0.01, 1), (C.ONE_HOT_AT, 2),
+                       (C.ONE_OVERHEAT_AT - 0.01, 2), (C.ONE_OVERHEAT_AT, 3)):
+        b.temp = temp
+        assert b._boost_from(Controls()) == zone == b.heat_zone(), temp
 
 
 def test_generated_pads_come_in_all_sizes():
@@ -618,15 +610,33 @@ def test_flaming_hoops_boost_a_clean_landing():
     assert ("hoop",) not in miss.step(Controls())       # above the ring: no hoop
 
 
-def test_bike_catches_fire_past_half_the_red_window():
+def test_bike_catches_fire_when_it_starts_overheating():
     import pygame
     if not pygame.display.get_init():
         pygame.display.init(); pygame.display.set_mode((10, 10))
     from ui.render import WorldRenderer
     b = Bike(flat(50)); b.one_button = True
-    mid = C.ONE_SUPER_AT + (C.TEMP_OVERHEAT - C.ONE_SUPER_AT) * 0.5
-    for temp, lit in ((C.ONE_SUPER_AT + 1, False), (mid - 0.1, False), (mid + 0.5, True)):
+    for temp, lit in ((C.ONE_HOT_AT + 1, False), (C.ONE_OVERHEAT_AT - 0.1, False), (C.ONE_OVERHEAT_AT + 0.3, True)):
         b.temp = temp
         assert (WorldRenderer.fire_level(b) > 0) == lit, temp
     b.temp = C.TEMP_OVERHEAT - 0.01
     assert WorldRenderer.fire_level(b) > 0.95
+
+
+def test_cold_bike_stopped_on_a_slope_can_still_pull_away():
+    """Regression: a respawn at the foot of a ramp left a cold one-button bike at
+    0 heat on an uphill, where heat never built (no heat on climbs), so it never
+    moved again (seed 250094827, Stadium race 2, col 33)."""
+    t = make_track("S" + "." * 10 + "L" + "." * 20, laps=1)
+    b = Bike(t, lane=1)
+    b.one_button = True
+    x = next(px for px in range(11 * C.TILE_W, 12 * C.TILE_W) if t.slope(px, 1) > C.CLIMB_SLOPE)
+    b.x, b.h, b.temp, b.speed = float(x), t.ground(x, 1), 0.0, 0.0
+    assert b.climbing()
+    run(b, Controls(a=True), 120)
+    assert b.x > x + 40 and b.temp > 0
+    b.temp = C.ONE_HOT_AT                  # a hot engine still gains nothing up a ramp
+    b.x, b.h = float(x), t.ground(x, 1)
+    before = b.temp
+    b.step(Controls(a=True))
+    assert b.temp <= before

@@ -188,6 +188,77 @@ def engine_loop_gen(fire_hz, dur=0.6, seed=7, sr=SR):
     return [v / peak * 0.85 for v in out]
 
 
+ZONE_LOOP_S = 1.2            # heat-zone layer loops (cold / warm / hot / overheating)
+
+
+def zone_loop_gen(zone, dur=ZONE_LOOP_S, sr=SR):
+    """A seamless loop layered over the engine for one heat zone, so each zone has
+    its own sound whatever the speed:
+      0 cold        uneven, choking misfire pops (the engine isn't up to temperature)
+      1 warm        a smooth, steady intake whoosh: settled and safe
+      2 hot         + a supercharger whine (~1.1 kHz) breathing slowly
+      3 overheating a high warbling whine (alarm-fast), sizzle and crackling backfires
+    Every tone has a whole number of cycles in the loop, and the noise is filtered
+    circularly, so nothing clicks at the seam."""
+    r = random.Random(101 + zone)
+    n = int(dur * sr)
+    out = [0.0] * n
+
+    def cyc(f):                                  # nearest frequency that loops seamlessly
+        return max(1, round(f * dur)) / dur
+
+    def tone(f, vol, trem_hz=0.0, trem=0.0, vib_hz=0.0, vib=0.0):
+        f, trem_hz, vib_hz = cyc(f), cyc(trem_hz) if trem_hz else 0.0, cyc(vib_hz) if vib_hz else 0.0
+        ph = 0.0
+        for i in range(n):
+            t = i / sr
+            fi = f * (1 + vib * math.sin(2 * math.pi * vib_hz * t)) if vib else f
+            ph += fi / sr
+            a = 1 - trem * (0.5 + 0.5 * math.sin(2 * math.pi * trem_hz * t)) if trem else 1.0
+            out[i] += math.sin(2 * math.pi * ph) * vol * a      # whole vibrato cycles: phase returns
+
+    def hiss(fc, vol):
+        x = [r.uniform(-1, 1) for _ in range(n)]
+        x = _onepole_lp(_onepole_lp(x, fc, sr), fc, sr)
+        peak = max(1e-6, max(abs(v) for v in x))
+        for i in range(n):
+            out[i] += x[i] / peak * vol
+
+    def pops(count, vol, length, fc, jitter=1.0):
+        for k in range(count):
+            at = int((k + r.uniform(0, jitter)) * n / count) if jitter < 1 else r.randrange(n)
+            body = r.uniform(60, 140)
+            amp = vol * r.uniform(0.5, 1.0)
+            L = int(length * sr * r.uniform(0.6, 1.3))
+            lp = 0.0
+            k_lp = 1 - math.exp(-2 * math.pi * fc / sr)
+            for j in range(L):
+                env = math.exp(-j / (L / 4))
+                lp += (r.uniform(-1, 1) - lp) * k_lp             # low-passed crackle
+                out[(at + j) % n] += (0.6 * lp + math.sin(2 * math.pi * body * j / sr)) * env * amp
+
+    if zone == 0:
+        pops(7, 0.55, 0.05, 900, jitter=0.7)     # irregular misfires
+        yield None
+        hiss(500, 0.08)
+    elif zone == 1:
+        hiss(1200, 0.32)                         # steady whoosh
+    elif zone == 2:
+        hiss(1800, 0.30)
+        yield None
+        tone(1100, 0.22, trem_hz=1.7, trem=0.35, vib_hz=1.7, vib=0.004)
+        tone(2200, 0.05)
+    else:
+        hiss(6000, 0.22)                         # sizzle
+        yield None
+        tone(1650, 0.26, trem_hz=7.5, trem=0.8, vib_hz=7.5, vib=0.02)   # warbling alarm whine
+        yield None
+        pops(30, 0.6, 0.025, 2500)               # crackling backfires
+    yield None
+    peak = max(1e-6, max(abs(v) for v in out))
+    return [v / peak * 0.8 for v in out]
+
+
 def seq(notes, step, **kw):
     """notes: list of names or None (rest). Each note lasts `step` seconds."""
     parts, offs = [], []
@@ -207,6 +278,8 @@ class Audio:
         self.music_vol = 1.0
         self.sounds = {}
         self.engine_loops = [None] * ENGINE_STEPS
+        self.zone_loops = [None] * 4     # heat-zone layers (zone_loop_gen)
+        self._zone = None
         self._engine_gen = None
         self._engine_bucket = None
         self._engine_x = 0.0
@@ -230,7 +303,8 @@ class Audio:
             # two engine channels so pitch steps crossfade instead of cutting over
             self.ch_engines = (pygame.mixer.Channel(0), pygame.mixer.Channel(2))
             self.ch_music = pygame.mixer.Channel(1)
-            pygame.mixer.set_reserved(3)
+            self.ch_zone = pygame.mixer.Channel(3)        # the heat-zone layer over the engine
+            pygame.mixer.set_reserved(4)
             self._build_sfx()
             self.enabled = True
         except Exception:
@@ -245,6 +319,7 @@ class Audio:
             return
         for ch in self.ch_engines:
             ch.set_volume(self.sfx_vol)
+        self.ch_zone.set_volume(self.sfx_vol)
         if self._music is not None:
             self._music.set_volume(MUSIC_BASE_VOL * self.music_vol)
         if not self.sound_on:
@@ -275,6 +350,7 @@ class Audio:
             "land": S(mix(noise(0.10, 0.35, 2500), osc(90, 0.1, "tri", 0.4, f_end=60))),
             "perfect": S(seq(["E5", "G#5", "B5", "E6"], 0.055, wave="square", vol=0.22, duty=0.25)),
             "rough": S(mix(noise(0.16, 0.35, 1800), osc(140, 0.16, "square", 0.18, f_end=70))),
+            "rough_free": S(mix(noise(0.10, 0.25, 2500), seq(["E5", "B5"], 0.05, wave="tri", vol=0.3))),
             "bounce": S(osc(160, 0.05, "square", 0.12, 0.5, f_end=120)),
             "crash": S(mix(noise(0.55, 0.5, 6000, rate_end=500), osc(300, 0.4, "square", 0.2, f_end=50))),
             "forgiven": S(seq(["C5", "E5", "G5"], 0.06, wave="tri", vol=0.4)),
@@ -302,6 +378,7 @@ class Audio:
         self._engine_gen = self._build_engine()
 
     ENGINE_VOL = 0.42
+    ZONE_VOL = (0.16, 0.10, 0.17, 0.24)    # cold / warm / hot / overheating layer volumes
 
     def _build_engine(self):
         """Engine loops, built a slice at a time from tick()."""
@@ -313,6 +390,10 @@ class Audio:
         for b in order:
             samples = yield from engine_loop_gen(engine_hz(b), seed=11 + b)
             self.engine_loops[b] = self._sound(samples, self.ENGINE_VOL)
+            yield None
+        for z in range(4):
+            samples = yield from zone_loop_gen(z)
+            self.zone_loops[z] = self._sound(samples, self.ZONE_VOL[z])
             yield None
 
     # -- public API --------------------------------------------------------------------
@@ -334,6 +415,7 @@ class Audio:
         if bike.state in ("crash", "done") or (bike.state == "overheat" and bike.speed <= 0):
             self.stop_engine()
             return
+        self._zone_layer(self.heat_zone(bike, ctl))
         x = bike.speed / 50.0
         if bike.state == "ride":
             x += 0.08 * getattr(bike, "boost_level", 1 if ctl.b else 0)
@@ -357,11 +439,37 @@ class Audio:
             cur.play(self.engine_loops[b], loops=-1, fade_ms=110 if not first else 60)
             cur.set_volume(self.sfx_vol)
 
+    @staticmethod
+    def heat_zone(bike, ctl):
+        """0 cold, 1 warm, 2 hot, 3 overheating. Classic mode maps its throttle onto
+        the same sounds: coasting cold, A warm, turbo hot, the red zone overheating."""
+        import config as C
+        if bike.state != "ride":
+            return 0
+        if getattr(bike, "one_button", False):
+            return bike.heat_zone()
+        if bike.temp >= C.RED_AT:
+            return 3
+        return 2 if ctl.b else 1 if ctl.a else 0
+
+    def _zone_layer(self, zone):
+        if zone == self._zone and self.ch_zone.get_busy():
+            return
+        snd = self.zone_loops[zone]
+        if snd is None:                           # still being built
+            return
+        self._zone = zone
+        self.ch_zone.fadeout(90)
+        self.ch_zone.play(snd, loops=-1, fade_ms=90)
+        self.ch_zone.set_volume(self.sfx_vol)
+
     def stop_engine(self):
         if self.enabled:
             for ch in self.ch_engines:
                 ch.fadeout(80)
+            self.ch_zone.fadeout(80)
         self._engine_bucket = None
+        self._zone = None
 
     # -- music ---------------------------------------------------------------------------------
     def music(self, name="title"):

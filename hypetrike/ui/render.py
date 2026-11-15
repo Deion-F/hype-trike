@@ -646,8 +646,11 @@ class WorldRenderer:
             sx = C.BIKE_SCREEN_X + (wx - cam_x)
             if sx < -40 or sx > self.width + 40:
                 continue
-            cy = C.lane_y(lane) + C.LANE_SPACING // 2 + 2 - hh - 14 * k   # around the rider's middle
+            base = C.lane_y(lane) + C.LANE_SPACING // 2 + 2
+            cy = base - hh - 14 * k                               # around the rider's middle
             ry, rx = 24, 9
+            if not front:
+                self._hoop_shadow(surf, sx, base - max(0.0, track.ground(wx, lane)), cy + ry, t)
             rect = pygame.Rect(int(sx - rx), int(cy - ry), 2 * rx, 2 * ry)
             a0, a1 = (math.pi / 2, 3 * math.pi / 2) if not front else (-math.pi / 2, math.pi / 2)
             pygame.draw.arc(surf, (120, 40, 20), rect.inflate(4, 4), a0, a1, 5)
@@ -661,12 +664,46 @@ class WorldRenderer:
                 col = (255, 190, 60) if (t // 3 + i) % 2 else (255, 100, 30)
                 pygame.draw.polygon(surf, col, [(px - 2, py), (px + 2, py), (px, py - fl)])
 
+    def draw_slipstream(self, surf, bike, leader, cam_x, t):
+        """Pale air streaks pouring off the rider ahead and over the drafting bike."""
+        x0, y0 = self.bike_screen_pos(leader, cam_x)
+        x1, y1 = self.bike_screen_pos(bike, cam_x)
+        k = self.sprites.scale
+        span = max(1.0, x0 - x1)
+        layer = pygame.Surface((int(span) + 40, 50), pygame.SRCALPHA)
+        top = min(y0, y1) - 36 * k
+        for i in range(5):
+            dy = 6 + i * 7 * k
+            off = (t * 6 + i * 23) % (span + 30)
+            xa = span + 20 - off                    # streaks run backwards, leader -> follower
+            ln = 14 + (i % 3) * 6
+            a = int(150 * (1 - off / (span + 30)))
+            pygame.draw.line(layer, (220, 240, 255, a), (xa, dy), (xa + ln, dy), 1 + (i % 2))
+        surf.blit(layer, (int(x1 - 10), int(top)))
+
+    @staticmethod
+    def _hoop_shadow(surf, sx, gy, bottom, t):
+        """The hoop's shadow on its lane's ground, lit orange by the fire, with a
+        faint dashed drop line up to the ring, so its lane reads at a glance."""
+        w, h = 34, 9
+        layer = pygame.Surface((w + 8, h + 8), pygame.SRCALPHA)
+        pygame.draw.ellipse(layer, (10, 6, 14, 150), (0, 4, w + 8, h))
+        glow = 70 + 30 * ((t // 4) % 2)
+        pygame.draw.ellipse(layer, (255, 120, 30, glow), (8, 6, w - 8, h - 4), 2)
+        surf.blit(layer, (int(sx - (w + 8) / 2), int(gy - (h + 8) / 2)))
+        y = gy - 6
+        while y > bottom + 4:
+            pygame.draw.line(surf, (255, 150, 60), (int(sx), int(y)), (int(sx), int(max(bottom, y - 3))), 1)
+            y -= 7
+
     @staticmethod
     def fire_level(bike):
-        """0 (no flames) .. 1 (about to blow): the bike catches fire once its heat
-        is more than half way into the red window."""
-        red_at = C.ONE_SUPER_AT if bike.one_button else C.RED_AT
-        start = red_at + (C.TEMP_OVERHEAT - red_at) * C.FIRE_FROM
+        """0 (no flames) .. 1 (about to blow): one-button bikes catch fire the moment
+        they enter the overheating zone; classic ones half way into the red."""
+        if bike.one_button:
+            start = C.ONE_OVERHEAT_AT + (C.TEMP_OVERHEAT - C.ONE_OVERHEAT_AT) * C.FIRE_FROM
+        else:
+            start = C.RED_AT + (C.TEMP_OVERHEAT - C.RED_AT) * 0.5
         if bike.state != "ride" or bike.temp <= start:
             return 0.0
         return min(1.0, (bike.temp - start) / max(0.01, C.TEMP_OVERHEAT - start))
@@ -849,17 +886,20 @@ class WorldRenderer:
             return
         px, py, (bx, by) = self.exhaust_pos(bike, cam_x)
         nx, ny = -by, bx
-        red = bike.temp >= C.ONE_SUPER_AT
-        flick = (t * 7919) % 5 * (2 if red else 1)
+        red = bike.temp >= C.ONE_HOT_AT
+        burning = bike.temp >= C.ONE_OVERHEAT_AT
+        flick = (t * 7919) % 5 * (3 if burning else 2 if red else 1)
         # Colour steps at the band edges so "boosting or not" reads at a glance:
         # (outer, mid, core) at the start and end of each band, blended within it.
         T = bike.temp
         pal = art.boost_palette(palette)
         if T < C.ONE_BOOST_AT:          # cold: a small pale flame
             k, (a, b) = T / C.ONE_BOOST_AT, pal["cold"]
-        elif not red:                    # boost band: deepening
-            k, (a, b) = (T - C.ONE_BOOST_AT) / (C.ONE_SUPER_AT - C.ONE_BOOST_AT), pal["boost"]
-        else:                            # red window: the scheme's most intense colour
+        elif not red:                    # warm band: deepening
+            k, (a, b) = (T - C.ONE_BOOST_AT) / (C.ONE_HOT_AT - C.ONE_BOOST_AT), pal["boost"]
+        elif not burning:                # hot: half way from the warm flame to the red one
+            k, (a, b) = 0.55, (pal["boost"][1], pal["red"][1])
+        else:                            # overheating: the scheme's most intense colour
             k, (a, b) = 1.0, pal["red"]
         cols = [tuple(int(a[j][i] + (b[j][i] - a[j][i]) * k) for i in range(3)) for j in range(3)]
         layers = ((4 + 36 * h + flick * 1.5, 3 + 9 * h, cols[0]),
@@ -908,9 +948,10 @@ class WorldRenderer:
         boost and red edges. always: show it at any heat (the player's, the only
         heat gauge); otherwise only once boosting (rivals, so the pack stays clear)."""
         if bike.one_button:
-            lo, boost_at, red_at = 0.0, C.ONE_BOOST_AT, C.ONE_SUPER_AT
+            lo, boost_at, red_at, burn_at = 0.0, C.ONE_BOOST_AT, C.ONE_HOT_AT, C.ONE_OVERHEAT_AT
         else:
-            lo, boost_at, red_at = C.TEMP_START, C.TEMP_STABLE_A, 27.0
+            lo, boost_at, red_at = C.TEMP_START, C.TEMP_STABLE_A, C.RED_AT
+            burn_at = red_at
         if bike.state != "ride" or (not always and bike.temp < boost_at):
             return
         hi = C.TEMP_OVERHEAT
@@ -934,26 +975,27 @@ class WorldRenderer:
             pygame.draw.polygon(surf, col, outer + inner)
 
         band(lo, hi, (20, 16, 28), outline=True)                # dark backing for contrast
-        band(lo, boost_at, (34, 52, 84))                        # dim zone track: cold / boost / overheating
+        band(lo, boost_at, (34, 52, 84))                        # dim zone track: cold / warm / hot / overheating
         band(boost_at, red_at, (92, 60, 30))
-        band(red_at, hi, (96, 26, 30))
+        band(red_at, burn_at, (110, 46, 24))
+        band(burn_at, hi, (96, 26, 30))
         temp = min(bike.temp, hi)
         if temp > lo:
             # the fill runs icy blue (cold) through orange (boost) to flaming red
             # (overheating), each slice coloured by its own heat; overheating flickers
             stops = ((lo, (130, 205, 255)), (boost_at, (200, 240, 255)), ((boost_at + red_at) / 2, (255, 190, 70)),
-                     (red_at, (255, 110, 30)), (hi, (225, 25, 15)))
-            hot = temp >= red_at and (t // 4) % 2 == 1
+                     (red_at, (255, 110, 30)), (burn_at, (255, 70, 20)), (hi, (225, 25, 15)))
+            hot = temp >= burn_at and (t // 4) % 2 == 1
             step = (hi - lo) / 48
             v = lo
             while v < temp:
                 v1 = min(temp, v + step)
                 col = _heat_colour(stops, (v + v1) / 2)
-                if hot and v >= red_at:
+                if hot and v >= burn_at:
                     col = (255, 220, 160)
                 band(v, v1 + step * 0.15, col)                  # tiny overlap: no seams
                 v = v1
-        for v in (boost_at, red_at):                            # zone edge ticks
+        for v in sorted({boost_at, red_at, burn_at}):          # zone edge ticks
             a = ang(v)
             pygame.draw.line(surf, (245, 245, 250), (cx + math.cos(a) * (r0 - 1), cy - math.sin(a) * (r0 - 1)),
                              (cx + math.cos(a) * (r1 + 1), cy - math.sin(a) * (r1 + 1)), 1)

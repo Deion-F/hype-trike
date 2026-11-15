@@ -142,7 +142,7 @@ class TitleScene(BackdropScene):
             items.append(extra(self))
         items.append(dict(label="TRACK EDITOR", sub="Build, test & share tracks",
                           action=lambda: self.app.set_scene(__import__("editor.ui", fromlist=["x"]).EditorScene(self.app))))
-        items.append(dict(label="GARAGE", sub=f"{self.app.profile.currency} coins - unlocks & loadout",
+        items.append(dict(label="GARAGE", sub=f"Bike upgrades (XP) & style ({self.app.profile.currency} coins)",
                           action=lambda: self.app.set_scene(__import__("ui.garage", fromlist=["x"]).GarageScene(self.app))))
         items.append(dict(label="REPLAYS", sub="Watch your recorded races",
                           action=lambda: self.app.set_scene(__import__("ui.replays", fromlist=["x"]).ReplayListScene(self.app))))
@@ -272,6 +272,7 @@ SETTING_ROWS = [
     ("air_lane_lock", "Lanes in the air", [(True, "Locked"), (False, "Free")]),
     ("lane_guide", "Mouse lane dots", [(False, "Off"), (True, "On")]),
     ("record_races", "Race recordings", [(True, "On"), (False, "Off")]),
+    ("speed_gauge", "Speed gauge (testing)", [(False, "Off"), (True, "On")]),
     ("sfx_vol", "Sound effects", SLIDER),
     ("music_vol", "Music", SLIDER),
     ("smooth", "Desktop scaling", [(False, "Sharp"), (True, "Smooth")]),
@@ -284,13 +285,38 @@ class SettingsScene(BackdropScene):
         self.back = back or (lambda: app.set_scene(TitleScene(app)))
         self.sel = 0
         self.drag = None          # (row index, pointer id) while dragging a slider
+        self.scroll = 0.0         # px the list is scrolled down
+        self._pan = None          # (pointer id, last y) while dragging the list
+
+    # The list scrolls (wheel, drag, or just moving the selection) inside a fixed
+    # window, so any number of settings fit; BACK stays put under it.
+    PITCH = 28
+    LIST_TOP = 50
+    LIST_BOTTOM = C.VIEW_H - 46
+
+    def _max_scroll(self):
+        return max(0, len(SETTING_ROWS) * self.PITCH - (self.LIST_BOTTOM - self.LIST_TOP))
+
+    def _scroll_to(self, v):
+        self.scroll = max(0.0, min(float(self._max_scroll()), v))
+
+    def _follow_sel(self):
+        if self.sel < len(SETTING_ROWS):
+            y = self.sel * self.PITCH
+            view = self.LIST_BOTTOM - self.LIST_TOP
+            if y < self.scroll:
+                self._scroll_to(y)
+            elif y + self.PITCH > self.scroll + view:
+                self._scroll_to(y + self.PITCH - view)
+
+    def _visible(self, r):
+        return r.top >= self.LIST_TOP - 1 and r.bottom <= self.LIST_BOTTOM + 1
 
     def _rows(self):
         W = self.app.view.width
-        # 360 px tall canvas: pitch shrinks so every row and BACK stay on screen
-        n = len(SETTING_ROWS) + 1
-        pitch = min(29, (C.VIEW_H - 54) // n)
-        return [pygame.Rect(W // 2 - 170, 50 + i * pitch, 340, pitch - 2) for i in range(n)]
+        rows = [pygame.Rect(W // 2 - 170, self.LIST_TOP + i * self.PITCH - int(self.scroll), 340, self.PITCH - 2)
+                for i in range(len(SETTING_ROWS))]
+        return rows + [pygame.Rect(W // 2 - 170, self.LIST_BOTTOM + 8, 340, 30)]
 
     @staticmethod
     def _bar(r):
@@ -336,28 +362,34 @@ class SettingsScene(BackdropScene):
                     self.back()
             elif k in (pygame.K_ESCAPE, pygame.K_AC_BACK):
                 self.back()
+            self._follow_sel()
         rows = self._rows()
         for kind, pid, x, y in inp.pointer_events:
             if kind == "down":
                 for i, (key, _, opts) in enumerate(SETTING_ROWS):
                     bar = self._bar(rows[i])
-                    if opts == SLIDER and bar.inflate(16, 18).collidepoint(x, y):
+                    if opts == SLIDER and self._visible(rows[i]) and bar.inflate(16, 18).collidepoint(x, y):
                         self.sel = i
                         self.drag = (i, pid)
                         self._set_vol(i, (x - bar.x) / bar.w, save=False)
+                if not self.drag and self.LIST_TOP <= y <= self.LIST_BOTTOM:
+                    self._pan = (pid, y)
             elif kind == "move" and self.drag and self.drag[1] == pid:
                 bar = self._bar(rows[self.drag[0]])
                 self._set_vol(self.drag[0], (x - bar.x) / bar.w, save=False)
+            elif kind == "move" and self._pan and self._pan[0] == pid:
+                self._scroll_to(self.scroll - (y - self._pan[1]))
+                self._pan = (pid, y)
+            elif kind == "up" and self._pan and self._pan[0] == pid:
+                self._pan = None
             elif kind == "up" and self.drag and self.drag[1] == pid:
                 self._set_vol(self.drag[0], self.app.profile.settings[SETTING_ROWS[self.drag[0]][0]])
                 self.drag = None
             elif kind == "wheel":
-                for i, (key, _, opts) in enumerate(SETTING_ROWS):
-                    if opts == SLIDER and i == self.sel:
-                        self._cycle(i, 1 if x > 0 else -1)
+                self._scroll_to(self.scroll - x * self.PITCH)       # x carries the wheel's y steps
         for x, y in inp.taps():
             for i, r in enumerate(rows):
-                if r.collidepoint(x, y):
+                if r.collidepoint(x, y) and (i == len(SETTING_ROWS) or self._visible(r)):
                     self.sel = i
                     if i < n:
                         if SETTING_ROWS[i][2] != SLIDER:
@@ -371,9 +403,11 @@ class SettingsScene(BackdropScene):
         hud.text(surf, "SETTINGS", (W // 2, 26), 36, C.ACCENT, anchor="center")
         st = self.app.profile.settings
         rows = self._rows()
-        fs = min(20, rows[0].h + 1)              # text shrinks with the row pitch
+        fs = 20
         for i, (key, label, opts) in enumerate(SETTING_ROWS):
             r = rows[i]
+            if not self._visible(r):
+                continue
             on = i == self.sel
             pygame.draw.rect(surf, (78, 70, 110) if on else (46, 42, 66), r, border_radius=6)
             if on:
@@ -395,3 +429,11 @@ class SettingsScene(BackdropScene):
                 val = dict(opts).get(st.get(key), str(st.get(key)))
                 hud.text(surf, f"< {val} >", (r.right - 12, r.centery), fs, C.ACCENT, anchor="midright")
         button(surf, rows[-1], "BACK", self.sel == len(SETTING_ROWS))
+        if self._max_scroll():                    # scrollbar
+            x = rows[0].right + 8
+            h = self.LIST_BOTTOM - self.LIST_TOP
+            view = h / (h + self._max_scroll())
+            pygame.draw.rect(surf, (46, 42, 66), (x, self.LIST_TOP, 5, h), border_radius=3)
+            pygame.draw.rect(surf, C.ACCENT, (x, self.LIST_TOP + int((h - h * view) * self.scroll /
+                                                                      self._max_scroll()), 5, int(h * view)),
+                             border_radius=3)
