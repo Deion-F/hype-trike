@@ -11,6 +11,7 @@ import math
 import pygame
 
 import config as C
+from ui import pix
 from bosses import BOSSES, RIG_LEN, ROOF_MIN
 
 PX = 24                              # local x of the rig's rear
@@ -172,7 +173,7 @@ def body(biome):
     if biome not in _cache:
         s = pygame.Surface((W, H), pygame.SRCALPHA)
         BODIES[biome](s, BOSSES[biome])
-        _cache[biome] = s
+        _cache[biome] = pix.relight(s)
     return _cache[biome]
 
 

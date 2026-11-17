@@ -9,12 +9,12 @@ from track.tiles import (PROFILES, GAP, START, COOLANT, MUD, DEBRIS, WATER, PAD_
                          DIRT, GRASS, SAND, PIT_DEPTH, DECKS, DECK_UP, DECK, DECK_DOWN,
                          DECK_KICK, DECK_GAP, DRAW, DECK_H, draw_lift, SPLITS, SPLIT_DRAW,
                          SKY_UP, SKY_DOWN, SKY_H, HIGH_LANES, _sample)
-from ui import art
+from ui import art, pix
 
 BACK_LANES = tuple(range(HIGH_LANES))           # split bridge: the skyway lanes
 FRONT_LANES = tuple(range(HIGH_LANES, C.LANES))  # ... and the deck lanes below
 
-FRONT_BOTTOM = 342
+FRONT_BOTTOM = C.LANE_BASE_Y + 106     # bottom of the track's front wall
 
 
 def _heat_colour(stops, v):
@@ -100,6 +100,7 @@ class WorldRenderer:
         self.theme_name = theme if theme in art.THEMES else "valley"
         self.theme = art.THEMES[self.theme_name]
         self.far, self.mid = art.build_backdrop(self.theme_name, self.width)
+        self.berm = art.build_berm(self.theme_name, self.width)
         th = self.theme
         self.mat_col = {DIRT: th["dirt"], GRASS: th["grass"], SAND: th["sand"]}
 
@@ -114,10 +115,9 @@ class WorldRenderer:
             surf.blit(layer, (-off, 0))
             if W - off < self.width:
                 surf.blit(layer, (W - off, 0))
-        th = self.theme
-        # berm behind lane 0
-        surf.fill(_shade(th["berm"], 0.85), (0, C.LANE_BASE_Y - 12, self.width, 12))
-        surf.fill(_shade(th["berm"], 1.05), (0, C.LANE_BASE_Y - 12, self.width, 2))
+        # berm behind lane 0: scrolls with the track
+        off = int(cam_x) % (self.berm.get_width() // 2)
+        surf.blit(self.berm, (-off, C.LANE_BASE_Y - 12))
 
     COL_TOP = C.LANE_BASE_Y - 100  # tallest structure (deck kicker, 71 px) + art above it
 
@@ -149,9 +149,10 @@ class WorldRenderer:
                 self._draw_leaf(surf, sx0, draw_lift(ticks, col), ticks, lanes=FRONT_LANES)
 
     def _render_column(self, track, col):
-        tmp = pygame.Surface((C.TILE_W + 2, FRONT_BOTTOM + 2), pygame.SRCALPHA)
+        tmp = pygame.Surface((C.TILE_W + 2, C.VIEW_H), pygame.SRCALPHA)
+        self._draw_foreground(tmp, col, 0)
         self._draw_column(tmp, track, col, 0)
-        return tmp.subsurface((0, self.COL_TOP, C.TILE_W + 2, FRONT_BOTTOM + 2 - self.COL_TOP)).copy()
+        return tmp.subsurface((0, self.COL_TOP, C.TILE_W + 2, C.VIEW_H - self.COL_TOP)).copy()
 
     def _draw_column(self, surf, track, col, sx0):
         th = self.theme
@@ -169,44 +170,8 @@ class WorldRenderer:
                            track.terrain[(col + 1) % track.ncols] == GAP)
             return
         prof = track.profile_at(col)
-        for (x0, h0), (x1, h1) in zip(prof, prof[1:]):
-            if x1 <= x0:
-                continue
-            a = sx0 + x0
-            b = sx0 + x1
-            slope = (h1 - h0) / (x1 - x0)
-            k = 1.0 + max(-0.35, min(0.25, slope * 0.35))
-            for lane in range(C.LANES):
-                ya = C.lane_y(lane)
-                yb = C.lane_y(lane + 1)
-                lk = k * (0.97 if lane % 2 else 1.0)
-                pygame.draw.polygon(surf, _shade(base, lk),
-                                    [(a, ya - h0), (b, ya - h1), (b + 1, yb - h1), (a, yb - h0)])
-                pygame.draw.line(surf, _shade(base, lk * 1.18), (a, ya - h0), (b, ya - h1))
-            yf = C.lane_y(C.LANES)
-            pygame.draw.polygon(surf, _shade(th["wall"], 0.8 + 0.2 * k),
-                                [(a, yf - h0), (b, yf - h1), (b + 1, FRONT_BOTTOM), (a, FRONT_BOTTOM)])
-        r = random.Random(col * 977 + 13)
-        for _ in range(10):
-            lx = r.randrange(C.TILE_W)
-            lane = r.randrange(C.LANES)
-            h = track._h[col * C.TILE_W + lx]
-            y = C.lane_y(lane) + r.randrange(3, C.LANE_SPACING - 2) - h
-            surf.fill(_shade(base, 0.72), (int(sx0 + lx), int(y), 2, 1))
-        if track.material[col] == GRASS:
-            for _ in range(14):
-                lx = r.randrange(C.TILE_W)
-                lane = r.randrange(C.LANES)
-                h = track._h[col * C.TILE_W + lx]
-                y = C.lane_y(lane) + r.randrange(2, C.LANE_SPACING - 3) - h
-                surf.fill(_shade(base, 1.25), (int(sx0 + lx), int(y), 1, 2))
-        elif track.material[col] == SAND:
-            for _ in range(10):
-                lx = r.randrange(C.TILE_W - 6)
-                lane = r.randrange(C.LANES)
-                h = track._h[col * C.TILE_W + lx]
-                y = C.lane_y(lane) + r.randrange(4, C.LANE_SPACING - 3) - h
-                pygame.draw.line(surf, _shade(base, 0.86), (sx0 + lx, y), (sx0 + lx + 5, y - 1))
+        hs = [_sample(prof, lx) for lx in range(C.TILE_W + 1)]
+        self._ground(surf, sx0, hs, track.material[col], base, col)
         if t == START:
             self._draw_start(surf, sx0)
         self._draw_surfaces(surf, track, col, sx0)
@@ -216,18 +181,161 @@ class WorldRenderer:
     BEAM = (92, 62, 40)
     RAIL = (52, 44, 52)
 
-    def _ground_strip(self, surf, sx0, base, x0=0, x1=C.TILE_W, shade=1.0):
-        """Flat ground lanes + front wall (what you see under the deck)."""
+    def _ground_strip(self, surf, sx0, base, x0=0, x1=C.TILE_W, shade=1.0, col=0):
+        """Flat ground lanes + front wall (what you see under a deck), darkened by
+        `shade` where the deck's shadow falls."""
+        self._ground(surf, sx0, [0.0] * (C.TILE_W + 1), DIRT, _shade(base, shade), col, x0, x1,
+                     wall_k=shade)
+
+    # -- ground: lanes, ruts, texture, the front wall's strata ---------------------------------
+    def _ground(self, surf, sx0, hs, mat, base, col, x0=0, x1=C.TILE_W, wall_k=1.0):
+        """Lanes lit by their slope (faces rising to the right catch the light),
+        dithered seams between lanes, broken tyre ruts, material texture (pebbles
+        and clods, grass tufts and flowers, sand ripples), a lit lip on each edge
+        and the front wall in horizontal strata with embedded rocks."""
         th = self.theme
-        base = _shade(base, shade)
-        a, b = sx0 + x0, sx0 + x1
-        for lane in range(C.LANES):
-            ya, yb = C.lane_y(lane), C.lane_y(lane + 1)
-            lk = 0.97 if lane % 2 else 1.0
-            surf.fill(_shade(base, lk), (a, ya, b - a + 1, yb - ya))
-            pygame.draw.line(surf, _shade(base, lk * 1.18), (a, ya), (b, ya))
-        yf = C.lane_y(C.LANES)
-        surf.fill(_shade(th["wall"], 1.0), (a, yf, b - a + 1, FRONT_BOTTOM - yf))
+        r = pix.ramp(base)
+        w = pix.ramp(_shade(th["wall"], wall_k))
+        dirt = pix.ramp(self.mat_col[DIRT])
+        y0, yf0 = C.lane_y(0), C.lane_y(C.LANES)
+        FB = FRONT_BOTTOM
+        rut = pix.mix(r[2], r[1], 0.7) if mat != GRASS else pix.mix(dirt[2], r[1], 0.4)
+        for x in range(x0, x1):
+            h = hs[x]
+            s = hs[x + 1] - hs[x] if x + 1 < len(hs) else 0.0
+            tone = r[3] if s > 0.08 else pix.mix(r[2], r[1], 0.75) if s < -0.08 else r[2]
+            X = sx0 + x
+            wx = col * C.TILE_W + x                      # world x: patterns run on across columns
+            top = int(round(y0 - h))
+            yf = int(round(yf0 - h))
+            surf.fill(tone, (X, top, 1, yf - top))
+            surf.set_at((X, top), r[4] if s > 0.08 else r[3])          # back lip
+            for lane in range(C.LANES):
+                ly = int(round(C.lane_y(lane) - h))
+                if lane and (wx + lane) % 2 == 0:
+                    surf.set_at((X, ly), pix.mix(tone, r[1], 0.6))      # lane seam
+                for off in (6, 13):                                     # tyre ruts
+                    if (wx + lane * 5 + off) % 9 > 1:
+                        surf.set_at((X, ly + off), rut if s >= -0.08 else pix.mix(rut, r[1], 0.5))
+                        if (wx + off) % 3 == 0:
+                            surf.set_at((X, ly + off + 1), pix.mix(tone, r[3], 0.4))
+            # front lip, then the wall: strata by depth (ground layers stay level)
+            surf.set_at((X, yf - 1), r[1])
+            surf.fill(w[3], (X, yf, 1, 1))
+            surf.fill(w[2], (X, yf + 1, 1, max(0, FB - yf - 1)))
+            for by, a_col, b_col in ((FB - 17, w[2], w[1]), (FB - 8, w[1], w[0])):
+                if by > yf + 2:
+                    surf.fill(b_col, (X, by + 2, 1, max(0, FB - by - 2)))
+                    if (wx % 2) == 0:
+                        surf.set_at((X, by), b_col)
+                    if (wx % 2) == 1:
+                        surf.set_at((X, by + 1), b_col)
+                    surf.set_at((X, by + 1), b_col) if wx % 4 == 0 else None
+            if FB - 17 > yf + 2 and (wx // 3) % 5 == 0:
+                surf.set_at((X, FB - 17 - 1), w[3])                     # a lit seam on the stratum
+        rng = random.Random(col * 977 + 13)
+        # texture on the lanes
+        n = {GRASS: 18, SAND: 14}.get(mat, 10)
+        flowers = th.get("flowers")
+        for _ in range(n):
+            lx = rng.randrange(max(1, x0), max(x0 + 2, x1 - 3))
+            lane = rng.randrange(C.LANES)
+            y = int(C.lane_y(lane) + rng.randrange(3, C.LANE_SPACING - 2) - hs[lx])
+            X = sx0 + lx
+            if mat == GRASS:
+                pix.tuft(surf, X, y, base, rng, rng.randint(2, 3))
+                if flowers and rng.random() < 0.25:
+                    surf.set_at((X + 2, y - 1), rng.choice(flowers))
+            elif mat == SAND:
+                ln = rng.randint(3, 6)
+                pygame.draw.line(surf, r[1], (X, y), (X + ln, y - 1))
+                pygame.draw.line(surf, r[3], (X, y - 1), (X + ln - 1, y - 2))
+            else:
+                if rng.random() < 0.55:
+                    pix.pebble(surf, X, y, base, big=rng.random() < 0.3)
+                else:
+                    surf.fill(r[1], (X, y, 2, 1))
+                    surf.set_at((X, y - 1), r[3])
+        # rocks in the wall
+        for _ in range(2):
+            lx = rng.randrange(max(1, x0), max(x0 + 2, x1 - 9))
+            yf = int(yf0 - hs[lx])
+            if FB - yf > 14:
+                y = rng.randint(yf + 8, FB - 2)
+                pix.rock(surf, sx0 + lx, y, rng.randint(5, 8), rng.randint(3, 5), pix.mix(w[2], (150, 150, 160), 0.35), rng)
+        surf.fill(w[0], (sx0 + x0, FB - 1, x1 - x0 + 1, 1))
+
+    def _draw_foreground(self, surf, col, sx0):
+        """The strip in front of the track, from its wall down to the canvas
+        bottom: a grassy bank with flowers and bushes, sand and rocks, ad boards
+        in the arena, basalt with glowing cracks on the volcano."""
+        th = self.theme
+        name = self.theme_name
+        top, bot = FRONT_BOTTOM, C.VIEW_H
+        if bot <= top:
+            return
+        rng = random.Random(col * 7919 + 3)
+        W = C.TILE_W + 2
+        fg = th.get("fg", th["grass"])
+        r = pix.ramp(fg)
+        surf.fill(r[1], (sx0, top, W, bot - top))
+        pix.dither_rows(surf, sx0, top + 4, W, 3, r[2], r[1])
+        surf.fill(r[2], (sx0, top, W, 4))
+        pix.dither_rows(surf, sx0, bot - 8, W, 4, r[1], r[0])
+        surf.fill(r[0], (sx0, bot - 4, W, 4))
+        if name == "stadium":
+            # advertising boards along the arena floor
+            for i in range(2):
+                bx = sx0 + i * 40
+                c = pix.ramp([(232, 72, 52), (40, 140, 230), (255, 196, 0), (120, 220, 60)][(col * 2 + i) % 4])
+                surf.fill(c[0], (bx, top + 6, 40, 18))
+                surf.fill(c[2], (bx + 1, top + 7, 38, 16))
+                surf.fill(c[3], (bx + 1, top + 7, 38, 1))
+                surf.fill(c[1], (bx + 1, top + 21, 38, 2))
+                for k in range(3):
+                    surf.fill((250, 250, 250), (bx + 5 + k * 11, top + 11, 8, 2))
+                    surf.fill((250, 250, 250), (bx + 5 + k * 11, top + 15, 5, 2))
+            return
+        for _ in range(26):
+            x = sx0 + rng.randrange(W)
+            y = rng.randrange(top + 2, bot - 3)
+            if name in ("valley", "night"):
+                pix.tuft(surf, x, y, fg, rng, rng.randint(2, 4))
+            elif name == "desert":
+                surf.fill(r[3], (x, y, rng.randint(2, 4), 1))
+                surf.fill(r[1], (x + 1, y + 1, rng.randint(2, 4), 1))
+            else:
+                surf.set_at((x, y), r[3])
+        if name == "valley":
+            for _ in range(5):
+                pix.flower(surf, sx0 + rng.randrange(2, W - 2), rng.randrange(top + 6, bot - 4),
+                           rng.choice([(255, 110, 140), (255, 236, 110), (250, 250, 250), (160, 140, 255)]), rng)
+            if col % 3 == 0:
+                pix.bush(surf, sx0 + rng.randrange(10, W - 10), bot - 6, rng.randint(14, 22), (70, 160, 70), rng,
+                         flowers=[(255, 120, 150), (255, 240, 120)])
+        elif name == "night":
+            for _ in range(2):
+                surf.set_at((sx0 + rng.randrange(W), rng.randrange(top, bot - 6)), (220, 255, 140))
+            if col % 3 == 0:
+                pix.bush(surf, sx0 + rng.randrange(10, W - 10), bot - 6, rng.randint(14, 22), (34, 80, 76), rng)
+        elif name == "desert":
+            if col % 2 == 0:
+                pix.rock(surf, sx0 + rng.randrange(4, W - 14), rng.randrange(top + 12, bot - 2),
+                         rng.randint(7, 12), rng.randint(4, 7), (186, 120, 84), rng)
+            if col % 3 == 1:
+                for k in range(4):                         # a dry shrub
+                    bx = sx0 + 30 + k * 2
+                    pygame.draw.line(surf, (150, 120, 70), (bx, bot - 6), (bx - 3 + k * 2, bot - 14 + k % 2))
+        elif name == "lava":
+            for _ in range(2):
+                x = sx0 + rng.randrange(W - 8)
+                y = rng.randrange(top + 6, bot - 8)
+                pygame.draw.line(surf, art.LAVA_DARK, (x, y), (x + 5, y + 3), 2)
+                pygame.draw.line(surf, art.LAVA, (x + 5, y + 3), (x + 8, y + 1))
+                surf.set_at((x + 5, y + 3), art.LAVA_HOT)
+            if col % 2 == 0:
+                pix.rock(surf, sx0 + rng.randrange(4, W - 14), rng.randrange(top + 12, bot - 2),
+                         rng.randint(7, 12), rng.randint(4, 7), (60, 46, 52), rng)
 
     def _deck_surface(self, surf, sx0, prof, x_from=0, x_to=C.TILE_W, lanes=None):
         """Plank lanes following `prof` between x_from and x_to; returns nothing.
@@ -251,10 +359,19 @@ class WorldRenderer:
                 pygame.draw.polygon(surf, _shade(plank, lk),
                                     [(a, ya - ha), (b, ya - hb), (b + 1, yb - hb), (a, yb - ha)])
             # plank seams across the deck (every 8 px)
+            pr = pix.ramp(plank)
             for px in range((x0c + 7) // 8 * 8, x1c, 8):
                 hp = h0 + (h1 - h0) * (px - x0) / (x1 - x0)
-                pygame.draw.line(surf, _shade(plank, 0.78), (sx0 + px, C.lane_y(back) - hp),
+                pygame.draw.line(surf, pr[1], (sx0 + px, C.lane_y(back) - hp),
                                  (sx0 + px, C.lane_y(front) - hp))
+                pygame.draw.line(surf, pr[3], (sx0 + px + 1, C.lane_y(back) - hp),
+                                 (sx0 + px + 1, C.lane_y(front) - hp))
+                for lane in range(back, front):                      # nail heads either side
+                    ny = int(C.lane_y(lane) - hp + 3)
+                    surf.set_at((sx0 + px - 2, ny), pr[0])
+                    surf.set_at((sx0 + px + 3, ny + 12), pr[0])
+                for gy in range(int(C.lane_y(back) - hp) + 4, int(C.lane_y(front) - hp), 7):   # grain
+                    surf.fill(pix.mix(pr[2], pr[1], 0.6), (sx0 + px + 3, gy + px % 3, 3, 1))
             # back rail and front deck edge (a dark beam)
             pygame.draw.line(surf, self.RAIL, (a, C.lane_y(back) - ha - 1), (b, C.lane_y(back) - hb - 1), 2)
             yf = C.lane_y(front)
@@ -273,9 +390,17 @@ class WorldRenderer:
         yb = C.lane_y(0)
         if yb - top_h + 6 < yb:
             surf.fill(dark, (x + 4, yb - top_h + 6, 3, top_h - 6))
+        br = pix.ramp(beam)
+        surf.fill(br[0], (x - 1, y_top, 6, yf - y_top))
         surf.fill(beam, (x, y_top, 4, yf - y_top))
-        surf.fill(_shade(beam, 1.35), (x, y_top, 1, yf - y_top))
-        surf.fill(dark, (x - 1, yf - 2, 6, 3))           # footing
+        surf.fill(br[3], (x, y_top, 1, yf - y_top))
+        surf.fill(br[1], (x + 3, y_top, 1, yf - y_top))
+        for by in range(y_top + 4, yf - 4, 14):          # bolts
+            surf.set_at((x + 1, by), br[4])
+            surf.set_at((x + 2, by + 1), br[0])
+        surf.fill(br[0], (x - 2, yf - 3, 8, 4))          # footing
+        surf.fill((120, 120, 132), (x - 1, yf - 3, 6, 2))
+        surf.fill((170, 170, 184), (x - 1, yf - 3, 6, 1))
 
     def _bracing(self, surf, xa, xb, top_h):
         yf = C.lane_y(C.LANES)
@@ -292,7 +417,7 @@ class WorldRenderer:
         nxt = track.terrain[(col + 1) % track.ncols]
         prv = track.terrain[(col - 1) % track.ncols]
         # the deck's shadow darkens the ground under it, so the space reads as open
-        self._ground_strip(surf, sx0, base, shade=1.0 if t in (DECK_GAP, DRAW) else 0.58)
+        self._ground_strip(surf, sx0, base, shade=1.0 if t in (DECK_GAP, DRAW) else 0.58, col=col)
         if t == DECK_UP:
             # a solid timber ramp: wedge front face, planks on top
             yf = C.lane_y(C.LANES)
@@ -358,7 +483,7 @@ class WorldRenderer:
         if lower == DRAW:
             self._draw_pit(surf, sx0, False, False)
         else:
-            self._ground_strip(surf, sx0, base, shade=0.5)
+            self._ground_strip(surf, sx0, base, shade=0.5, col=col)
         uprof = PROFILES[upper]
         # skyway legs: tall timber posts from the strip's front edge to the ground
         for lx in (6, 46):
@@ -426,23 +551,48 @@ class WorldRenderer:
         pygame.draw.circle(surf, colr, (px + 1, py - 2), 3)
 
     def _draw_pit(self, surf, sx0, open_left=False, open_right=False):
+        """A hole through the track: rock sides, darkness deepening with
+        depth (dithered bands), water or lava at the bottom with ripples."""
         th = self.theme
         top = C.lane_y(0) - 2
         x0 = sx0 if open_left else sx0 + 2
         x1 = sx0 + C.TILE_W if open_right else sx0 + C.TILE_W - 2
-        pygame.draw.rect(surf, (20, 16, 24), (x0, top, x1 - x0 + 1, FRONT_BOTTOM - top))
-        for i in range(6):
-            pygame.draw.rect(surf, (34, 28, 40), (sx0 + 6 + i * 12, top + 8 + (i % 2) * 6, 6, 3))
+        w = x1 - x0 + 1
+        bands = [(46, 36, 52), (34, 26, 40), (24, 18, 30), (16, 12, 22)]
+        hh = (FRONT_BOTTOM - top) // len(bands)
+        for i, c in enumerate(bands):
+            surf.fill(c, (x0, top + i * hh, w, FRONT_BOTTOM - top - i * hh))
+            if i:
+                surf.blit(pix.checker(w, 1, c, i), (x0, top + i * hh - 1))
+                surf.blit(pix.checker(w, 1, c, i + 1, 4), (x0, top + i * hh - 2))
+        rr = pix.ramp((70, 58, 74))
+        for i in range(7):                                     # rock ledges in the back wall
+            rx = sx0 + 5 + i * 11
+            ry = top + 6 + (i * 5) % 14
+            surf.fill(rr[0], (rx - 1, ry - 1, 8, 4))
+            surf.fill(rr[1], (rx, ry, 6, 2))
+            surf.fill(rr[2], (rx, ry, 4, 1))
         lava = self.theme.get("lava")
-        pygame.draw.rect(surf, art.LAVA_DARK if lava else (60, 120, 170), (x0, FRONT_BOTTOM - 14, x1 - x0 + 1, 14))
-        pygame.draw.rect(surf, art.LAVA_HOT if lava else (120, 180, 220), (x0, FRONT_BOTTOM - 14, x1 - x0 + 1, 2))
-        for edge, is_open in ((sx0, open_left), (sx0 + C.TILE_W - 3, open_right)):
+        wr = pix.ramp(art.LAVA if lava else (60, 126, 186))
+        wy = FRONT_BOTTOM - 14
+        surf.fill(wr[1], (x0, wy, w, 14))
+        surf.fill(wr[2], (x0, wy, w, 5))
+        surf.fill(wr[4] if lava else wr[3], (x0, wy, w, 1))
+        for i in range(0, w - 6, 9):                           # ripples / bubbles
+            surf.fill(wr[3], (x0 + i + (i // 9 % 2) * 3, wy + 4 + (i // 9 % 3) * 3, 4, 1))
+            surf.set_at((x0 + i + 2, wy + 2), wr[4])
+        surf.fill(wr[0], (x0, FRONT_BOTTOM - 2, w, 2))
+        wall = pix.ramp(th["wall"])
+        for edge, is_open, side in ((sx0, open_left, 0), (sx0 + C.TILE_W - 3, open_right, 1)):
             if is_open:
                 continue
-            pygame.draw.rect(surf, _shade(th["wall"], 0.7), (edge, top, 3, FRONT_BOTTOM - top))
+            surf.fill(wall[0], (edge, top, 3, FRONT_BOTTOM - top))
+            surf.fill(wall[1] if side else wall[2], (edge + (0 if side else 1), top, 2, FRONT_BOTTOM - top))
             for lane in range(C.LANES + 1):   # hazard stripes on the lips
                 y = C.lane_y(lane)
-                surf.fill((250, 210, 40) if lane % 2 else (30, 30, 30), (edge - 1, y - 2, 4, 4))
+                surf.fill((30, 26, 34), (edge - 1, y - 3, 5, 6))
+                surf.fill((250, 210, 40) if lane % 2 else (60, 56, 64), (edge, y - 2, 3, 4))
+                surf.set_at((edge, y - 2), (255, 250, 200) if lane % 2 else (110, 106, 120))
 
     def _draw_start(self, surf, sx0):
         # Checkered line just ahead of where the bikes line up, so every front
@@ -452,15 +602,41 @@ class WorldRenderer:
             y0 = C.lane_y(lane)
             for j in range(5):
                 for i in range(2):
-                    col = (250, 250, 250) if (i + j) % 2 == 0 else (24, 24, 30)
+                    col = (246, 246, 250) if (i + j) % 2 == 0 else (30, 28, 38)
                     surf.fill(col, (lx + i * 4, int(y0 + j * 4), 4, 4))
-        # gate behind lane 0, its right post on the line (kept inside the column)
+                    if (i + j) % 2 == 0:
+                        surf.fill((206, 206, 220), (lx + i * 4, int(y0 + j * 4) + 3, 4, 1))
+        # an inflatable arch behind lane 0, its right foot on the line (inside the column)
         gx = lx + 4
-        pygame.draw.rect(surf, (230, 230, 240), (gx - 48, C.LANE_BASE_Y - 70, 3, 58))
-        pygame.draw.rect(surf, (230, 230, 240), (gx + 4, C.LANE_BASE_Y - 70, 3, 58))
-        pygame.draw.rect(surf, (232, 72, 52), (gx - 50, C.LANE_BASE_Y - 78, 59, 12))
-        for i in range(7):
-            surf.fill((250, 250, 250) if i % 2 else (24, 24, 30), (gx - 46 + i * 8, C.LANE_BASE_Y - 75, 8, 6))
+        cx, base = gx - 20, C.LANE_BASE_Y - 10
+        rx, ry = 24, 80
+        pts = [(cx - rx * math.cos(math.pi * i / 40), base - ry * math.sin(math.pi * i / 40)) for i in range(41)]
+        red, white = pix.ramp((226, 52, 50)), pix.ramp((242, 242, 248))
+        for x, y in pts:                                      # outline pass
+            pygame.draw.circle(surf, (24, 14, 26), (round(x), round(y)), 6)
+        for i, (x, y) in enumerate(pts):                      # tube in red / white segments
+            rr = red if (i // 5) % 2 == 0 else white
+            pygame.draw.circle(surf, rr[2], (round(x), round(y)), 5)
+        for i, (x, y) in enumerate(pts):                      # shading: lit upper-left, dark lower-right
+            rr = red if (i // 5) % 2 == 0 else white
+            pygame.draw.circle(surf, rr[1], (round(x) + 2, round(y) + 2), 2)
+            surf.set_at((round(x) - 2, round(y) - 2), rr[4])
+            if i % 5 == 0 and 0 < i < 40:                     # seam between segments
+                surf.set_at((round(x), round(y)), rr[0])
+        for fx in (cx - rx, cx + rx):                         # anchor weights at the feet
+            surf.fill((24, 14, 26), (fx - 6, base - 2, 13, 6))
+            surf.fill((90, 90, 104), (fx - 5, base - 1, 11, 4))
+            surf.fill((140, 140, 156), (fx - 5, base - 1, 11, 1))
+        by = base - 66                                        # checkered banner hanging inside
+        surf.fill((24, 14, 26), (cx - 18, by - 1, 37, 13))
+        for i in range(9):
+            for j in range(3):
+                c = (250, 250, 250) if (i + j) % 2 else (30, 28, 38)
+                surf.fill(c, (cx - 17 + i * 4, by + j * 4, 4, 4))
+        for k, fx in enumerate((cx - 30, cx + 28)):           # pennants either side
+            surf.fill((90, 90, 104), (fx, base - 40, 1, 30))
+            pygame.draw.polygon(surf, (255, 200, 40) if k else (60, 160, 240),
+                                [(fx + 1, base - 40), (fx + 8, base - 37), (fx + 1, base - 34)])
 
     def _draw_surfaces(self, surf, track, col, sx0):
         for lane in range(C.LANES):
@@ -471,35 +647,51 @@ class WorldRenderer:
             h = track.ground(col * C.TILE_W + 40, lane)
             cy = y0 + C.LANE_SPACING // 2 - h
             if s == MUD:
-                pygame.draw.ellipse(surf, (88, 58, 40), (sx0 + 8, cy - 6, 64, 13))
-                pygame.draw.ellipse(surf, (110, 76, 52), (sx0 + 16, cy - 4, 40, 7))
-                surf.fill((70, 46, 30), (int(sx0 + 30), int(cy - 1), 6, 2))
+                self._pool(surf, sx0, cy, (96, 64, 42), (52, 34, 26), shine=(150, 112, 78), clods=True)
             elif s in PAD_BARS:
                 self._draw_pad(surf, sx0, cy, PAD_BARS[s], getattr(self, "heat_pads", False))
             elif s == WATER and self.theme.get("lava"):
-                # lava pit: glowing crust rim, molten middle, a couple of bubbles
-                pygame.draw.ellipse(surf, (50, 30, 30), (sx0 + 6, cy - 7, 68, 15))
-                pygame.draw.ellipse(surf, art.LAVA_DARK, (sx0 + 9, cy - 5, 62, 11))
-                pygame.draw.ellipse(surf, art.LAVA, (sx0 + 14, cy - 4, 50, 8))
-                pygame.draw.ellipse(surf, art.LAVA_HOT, (sx0 + 24, cy - 2, 26, 4))
+                self._pool(surf, sx0, cy, art.LAVA, (50, 30, 30), shine=art.LAVA_HOT, glow=True)
                 pygame.draw.circle(surf, art.LAVA_HOT, (int(sx0 + 20), int(cy + 1)), 2)
-                pygame.draw.circle(surf, (255, 240, 180), (int(sx0 + 56), int(cy - 1)), 1)
+                surf.set_at((int(sx0 + 56), int(cy - 1)), (255, 240, 180))
             elif s == WATER:
-                # puddle: dark rim, blue water, sky reflection streaks
-                pygame.draw.ellipse(surf, _shade(self.theme["dirt"], 0.7), (sx0 + 6, cy - 7, 68, 15))
-                pygame.draw.ellipse(surf, (52, 110, 170), (sx0 + 9, cy - 5, 62, 11))
-                pygame.draw.ellipse(surf, (80, 150, 210), (sx0 + 14, cy - 4, 46, 7))
-                pygame.draw.line(surf, (200, 230, 255), (sx0 + 22, cy - 2), (sx0 + 36, cy - 2))
-                pygame.draw.line(surf, (170, 215, 250), (sx0 + 44, cy + 1), (sx0 + 52, cy + 1))
+                self._pool(surf, sx0, cy, (64, 128, 192), pix.ramp(self.theme["dirt"])[0], shine=(220, 240, 255))
             elif s == DEBRIS:
-                # striped barrier (crash window is local x 28..52)
-                bx = sx0 + 30
-                pygame.draw.rect(surf, (60, 50, 50), (bx + 1, cy - 1, 20, 4))
-                pygame.draw.rect(surf, (240, 240, 240), (bx, cy - 15, 20, 12))
-                for i in range(0, 20, 6):
-                    pygame.draw.polygon(surf, (232, 59, 59), [(bx + i, cy - 3), (bx + i + 3, cy - 15),
-                                                              (bx + min(20, i + 6), cy - 15), (bx + min(20, i + 3), cy - 3)])
-                pygame.draw.rect(surf, (40, 30, 30), (bx, cy - 15, 20, 12), 1)
+                # striped barrier (crash window is local x 28..52): outlined, shaded
+                # top and side, feet with a contact shadow
+                bx, by = sx0 + 30, int(cy - 15)
+                pygame.draw.ellipse(surf, pix.ramp(self.theme["dirt"])[1], (bx - 3, cy - 3, 27, 6))
+                surf.fill((34, 26, 30), (bx - 1, by - 1, 22, 14))
+                surf.fill((236, 236, 242), (bx, by, 20, 12))
+                for i in range(-6, 20, 7):
+                    pygame.draw.polygon(surf, (224, 54, 54), [(bx + max(0, i), by + 11), (bx + max(0, i + 4), by),
+                                                              (bx + min(19, i + 8), by), (bx + min(19, i + 4), by + 11)])
+                surf.fill((255, 255, 255), (bx, by, 20, 1))
+                surf.fill((170, 160, 176), (bx, by + 10, 20, 2))
+                surf.fill((150, 40, 46), (bx + 18, by + 1, 2, 9))
+                for fx in (bx + 2, bx + 15):
+                    surf.fill((34, 26, 30), (fx - 1, by + 12, 5, 4))
+                    surf.fill((90, 86, 100), (fx, by + 12, 3, 3))
+                surf.fill((255, 220, 60), (bx + 9, by - 3, 3, 3))       # warning lamp
+                surf.set_at((bx + 9, by - 3), (255, 255, 220))
+
+    def _pool(self, surf, sx0, cy, col, rim, shine, clods=False, glow=False):
+        """A puddle / mud patch / lava pool on a lane: an outlined dark rim, a
+        shaded lip on the far side, the surface in its ramp and glints."""
+        r = pix.ramp(col)
+        pygame.draw.ellipse(surf, rim, (sx0 + 6, cy - 7, 68, 15))
+        pygame.draw.ellipse(surf, r[1], (sx0 + 9, cy - 5, 62, 11))
+        pygame.draw.ellipse(surf, r[2], (sx0 + 11, cy - 3, 58, 9))
+        pygame.draw.ellipse(surf, r[3] if not glow else r[4], (sx0 + 22, cy - 1, 30, 4))
+        pygame.draw.line(surf, shine, (sx0 + 24, cy - 2), (sx0 + 36, cy - 2))
+        pygame.draw.line(surf, shine, (sx0 + 46, cy + 1), (sx0 + 52, cy + 1))
+        surf.set_at((int(sx0 + 58), int(cy - 2)), shine)
+        if clods:
+            for dx, dy in ((14, 3), (30, -3), (54, 2), (62, -2)):
+                surf.fill(r[0], (sx0 + dx, cy + dy, 3, 2))
+                surf.set_at((int(sx0 + dx), int(cy + dy)), shine)
+            for dx, dy in ((2, -2), (74, 1), (70, -6)):               # splats round the edge
+                surf.fill(r[1], (sx0 + dx, cy + dy, 2, 2))
 
     # pad plate (base, rim, chevron) colours by size, small -> large
     HEAT_PAD_COLS = (((170, 70, 24), (255, 150, 60), (255, 215, 90)),
@@ -509,21 +701,35 @@ class WorldRenderer:
 
     def _draw_pad(self, surf, sx0, cy, bars, heat):
         """Coolant / heat pad, sized by the bars it gives: the plate grows and
-        carries one chevron per bar (1 small, 2 medium, 3 large)."""
+        carries one chevron per bar (1 small, 2 medium, 3 large). A bevelled
+        metal plate: outline, lit top edge, shaded bottom, corner bolts and
+        outlined chevrons."""
         w = 12 + 15 * bars + (6 if bars == 3 else 0)
         x0 = sx0 + 40 - w // 2
         if heat:
             base, rim, chev = self.HEAT_PAD_COLS[bars - 1]
         else:
-            base, rim, chev = self.COOL_PAD_COLS[bars - 1], None, (90, 220, 255)
-        pygame.draw.rect(surf, base, (x0, cy - 6, w, 13), border_radius=3)
+            base, rim, chev = self.COOL_PAD_COLS[bars - 1], None, (110, 230, 255)
+        r = pix.ramp(base)
+        y = int(cy - 6)
+        pygame.draw.rect(surf, r[0], (x0 - 1, y - 1, w + 2, 15), border_radius=4)
+        pygame.draw.rect(surf, r[2], (x0, y, w, 13), border_radius=3)
+        surf.fill(r[3], (x0 + 2, y, w - 4, 1))
+        surf.fill(r[1], (x0 + 2, y + 11, w - 4, 2))
         if rim:
-            pygame.draw.rect(surf, rim, (x0, cy - 6, w, 13), 1, border_radius=3)
+            pygame.draw.rect(surf, rim, (x0, y, w, 13), 1, border_radius=3)
             if bars == 3:                                  # large: a hot glow line under it
                 pygame.draw.line(surf, rim, (x0 + 3, cy + 8), (x0 + w - 4, cy + 8))
+        for bx in (x0 + 2, x0 + w - 3):
+            surf.set_at((bx, y + 2), r[4])
+            surf.set_at((bx, y + 10), r[1])
+        cr = pix.ramp(chev)
         for i in range(bars):
             x = x0 + 8 + i * 15
-            pygame.draw.polygon(surf, chev, [(x, cy - 4), (x + 8, cy), (x, cy + 4), (x + 3, cy)])
+            pts = [(x, cy - 4), (x + 8, cy), (x, cy + 4), (x + 3, cy)]
+            pygame.draw.polygon(surf, r[0], [(px + 1, py + 1) for px, py in pts])
+            pygame.draw.polygon(surf, cr[2], pts)
+            pygame.draw.line(surf, cr[4], (x, cy - 4), (x + 7, cy))
 
     # ------------------------------------------------------------------------
     def bike_screen_pos(self, bike, cam_x):

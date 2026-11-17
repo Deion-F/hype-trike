@@ -132,7 +132,7 @@ class InputManager:
     def layout(self, width):
         h = self.view.height
         st = getattr(self, "settings", None) or {}
-        k = float(st.get("button_scale", 1.0))
+        k = float(st.get("button_scale", 1.0)) * C.ZOOM      # same size on screen at any zoom
         swap = st.get("swap_sides", False)
         lane_btns = st.get("lane_mode", "swipe") in ("buttons", "both")
         one = st.get("throttle_mode") == "one"
@@ -150,7 +150,7 @@ class InputManager:
                 Button("up", L(83 * k), h - 160 * k, 22 * k, "^"),
                 Button("down", L(83 * k), h - 112 * k, 22 * k, "v"),
             ]
-        self.buttons.append(Button("pause", width - 20, 64, 14, "II"))
+        self.buttons.append(Button("pause", width - round(20 * C.ZOOM), round(64 * C.ZOOM), round(14 * C.ZOOM), "II"))
 
     @property
     def show_touch(self):

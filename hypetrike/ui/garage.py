@@ -495,23 +495,25 @@ class GarageScene(BackdropScene):
         key = livery_key(look["livery"], look["rider"])
         sprite = self.sprites.vehicle(vehicle, key, (self.t // 6) % 2)
 
+        LW, LH, cx, cy = 76, 48, 52, 42                    # in-race pixels; whole-number zoom keeps them crisp
+
         def bike_with_flame(temp, scale):
-            cx, cy = 66, 60
-            layer = pygame.Surface((100, 66), pygame.SRCALPHA)
+            layer = pygame.Surface((LW, LH), pygame.SRCALPHA)
             fake = SimpleNamespace(x=0.0, lane_pos=0.0, angle=0.0, temp=temp,
                                    h=C.lane_y(0) + C.LANE_SPACING // 2 + 2 - cy,
                                    stats=SimpleNamespace(vehicle=vehicle))
             rd.draw_heat_flame(layer, fake, C.BIKE_SCREEN_X - cx, self.t, look["boost"])
-            layer.blit(sprite, (cx - art.CONTACT[0], cy - art.CONTACT[1]))
-            return pygame.transform.scale(layer, (int(100 * scale), int(66 * scale)))
+            px, py = art.contact_px()
+            layer.blit(sprite, (round(cx - px), round(cy - py)))
+            return pygame.transform.scale(layer, (LW * scale, LH * scale))
 
-        big = bike_with_flame((C.ONE_HOT_AT + C.ONE_OVERHEAT_AT) / 2, 2.2)
-        surf.blit(big, (x0 + pw // 2 - big.get_width() * 66 // 100, 84))
+        big = bike_with_flame((C.ONE_HOT_AT + C.ONE_OVERHEAT_AT) / 2, 3)
+        surf.blit(big, (x0 + pw // 2 - big.get_width() * cx // LW + 20, 84))
         temps = (C.ONE_BOOST_AT * 0.7, (C.ONE_BOOST_AT + C.ONE_HOT_AT) / 2,
                  (C.ONE_HOT_AT + C.ONE_OVERHEAT_AT) / 2, C.ONE_OVERHEAT_AT + 3)
         cell = pw // 4
         for k, temp in enumerate(temps):
-            small = bike_with_flame(temp, 0.8)
+            small = bike_with_flame(temp, 1)
             bx = x0 + k * cell + (cell - small.get_width()) // 2 + 6
             surf.blit(small, (bx, 232))
             hud.text(surf, ("cold", "warm", "hot", "overheating")[k], (x0 + k * cell + cell // 2, 290), 13,

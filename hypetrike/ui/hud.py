@@ -70,9 +70,20 @@ def flush_queued(surf, rect=None):
 
 
 def panel(surf, rect, alpha=170, color=C.HUD_BG, radius=6):
+    """A see-through window: a dark outline, a two-tone body (lighter top
+    half), a lit inner top edge and a shaded bottom edge (16-bit UI frame)."""
     flush_queued(surf, pygame.Rect(rect))
-    s = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
-    pygame.draw.rect(s, (*color, alpha), (0, 0, rect[2], rect[3]), border_radius=radius)
+    w, h = rect[2], rect[3]
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    hi = tuple(min(255, c + 22) for c in color)
+    lo = tuple(max(0, c - 10) for c in color)
+    pygame.draw.rect(s, (8, 6, 16, min(255, alpha + 60)), (0, 0, w, h), border_radius=radius)
+    pygame.draw.rect(s, (*color, alpha), (1, 1, w - 2, h - 2), border_radius=max(0, radius - 1))
+    if h > 8:
+        pygame.draw.rect(s, (*hi, alpha), (1, 1, w - 2, (h - 2) // 2), border_top_left_radius=max(0, radius - 1),
+                         border_top_right_radius=max(0, radius - 1))
+        s.fill((*lo, alpha), (radius, h - 3, w - 2 * radius, 2))
+    s.fill((255, 255, 255, min(255, alpha // 2 + 40)), (radius, 1, w - 2 * radius, 1))
     surf.blit(s, (rect[0], rect[1]))
 
 
@@ -190,11 +201,78 @@ def boss_hud(surf, race, width, ticks):
         text(surf, "IT'S GETTING AWAY - CATCH UP!", (width // 2, 62), 18, C.DANGER, anchor="center")
 
 
+# --- LCD digits: a pixel 7-segment readout ------------------------------------------------
+_SEGS = {"0": "abcdef", "1": "bc", "2": "abged", "3": "abgcd", "4": "fgbc", "5": "afgcd", "6": "afgedc",
+         "7": "abc", "8": "abcdefg", "9": "abcfgd", "-": "g", " ": ""}
+
+
+def lcd(surf, s, pos, h=12, color=C.ACCENT, off=(60, 50, 30)):
+    """Draw s (digits, ':', '.', '-') as 7-segment digits h px tall at pos
+    (top left); unlit segments show faintly. Returns the width used."""
+    x, y = pos
+    t = max(1, h // 6)                      # segment thickness
+    w = h // 2 + t
+    half = h // 2
+    lit_hi = tuple(min(255, c + 50) for c in color)
+    for ch in str(s):
+        if ch in ":.":
+            n = (y + h // 3, y + h - t * 2) if ch == ":" else (y + h - t,)
+            for yy in n:
+                surf.fill(color, (x, yy, t, t))
+            x += t * 2 + 1
+            continue
+        on = _SEGS.get(ch, "")
+        segs = {"a": (x + t, y, w - 2 * t, t), "g": (x + t, y + half - t // 2, w - 2 * t, t),
+                "d": (x + t, y + h - t, w - 2 * t, t), "f": (x, y + t, t, half - t), "b": (x + w - t, y + t, t, half - t),
+                "e": (x, y + half + t // 2, t, half - t - t // 2), "c": (x + w - t, y + half + t // 2, t, half - t - t // 2)}
+        for k, r in segs.items():
+            surf.fill(color if k in on else off, r)
+            if k in on and k in "agd":
+                surf.fill(lit_hi, (r[0], r[1], r[2], 1))
+        x += w + max(2, t + 1)
+    return x - pos[0]
+
+
+def lcd_box(surf, s, rect, h=12, color=C.ACCENT):
+    """A recessed LCD screen (dark inset with a lit bottom edge) holding s, right-aligned."""
+    flush_queued(surf, pygame.Rect(rect))
+    x, y, w, hh = rect
+    surf.fill((6, 4, 12), (x, y, w, hh))
+    surf.fill((22, 18, 20), (x + 1, y + 1, w - 2, hh - 2))
+    surf.fill((70, 64, 90), (x + 1, y + hh - 1, w - 2, 1))
+    tw = lcd(pygame.Surface((w * 2, hh)), s, (0, 0), h)
+    lcd(surf, s, (x + w - tw - 3, y + (hh - h) // 2), h, color)
+
+
+def start_lights(surf, cx, y, countdown):
+    """A gantry of three lamps over the countdown: one more turns red each
+    second, all green at GO (countdown <= 0)."""
+    lit = 3 - min(3, countdown // C.FPS) if countdown > 0 else 3
+    green = countdown <= 0
+    x0 = cx - 46
+    pygame.draw.rect(surf, (8, 6, 14), (x0, y, 92, 32), border_radius=6)
+    pygame.draw.rect(surf, (52, 50, 66), (x0 + 1, y + 1, 90, 30), border_radius=5)
+    surf.fill((84, 82, 100), (x0 + 6, y + 1, 80, 1))
+    for i in range(3):
+        c = (cx - 28 + i * 28, y + 16)
+        pygame.draw.circle(surf, (14, 10, 20), c, 12)
+        if green:
+            col, hi = (60, 220, 90), (200, 255, 200)
+        elif i < lit:
+            col, hi = (230, 40, 40), (255, 190, 170)
+        else:
+            col, hi = (50, 30, 36), (80, 60, 66)
+        pygame.draw.circle(surf, col, c, 10)
+        pygame.draw.circle(surf, tuple(max(0, v - 50) for v in col), (c[0] + 2, c[1] + 2), 7)
+        pygame.draw.circle(surf, col, (c[0] - 1, c[1] - 1), 7)
+        surf.fill(hi, (c[0] - 5, c[1] - 6, 3, 2))
+
+
 def _lap_hud(surf, race, width, best):
     panel(surf, (6, 6, 150, 40))
     lap = min(race.laps_done + 1, race.track.laps)
-    text(surf, f"LAP {lap}/{race.track.laps}", (12, 10), 18)
-    text(surf, fmt_time(race.clock), (12, 26), 22, C.ACCENT)
+    text(surf, f"LAP {lap}/{race.track.laps}", (12, 20), 18)
+    lcd_box(surf, fmt_time(race.clock), (64, 10, 88, 32), 14)
     if race.lap_times:
         panel(surf, (width - 136, 6, 130, 40))
         text(surf, f"LAST {fmt_time(race.lap_times[-1])}", (width - 130, 10), 18)
@@ -227,8 +305,10 @@ def _common_hud(surf, race, width, ticks, extra_left, heat_bar, speed):
         text(surf, "OVERHEAT!", (width // 2, 120), 40, C.DANGER, anchor="center")
     if race.countdown > 0:
         n = race.countdown // C.FPS + 1
+        start_lights(surf, width // 2, 152, race.countdown)
         text(surf, str(n), (width // 2, 120), 72, C.ACCENT, anchor="center")
     elif race.time_ticks < 45:
+        start_lights(surf, width // 2, 152, 0)
         text(surf, "GO!", (width // 2, 120), 72, C.GOOD, anchor="center")
 
 

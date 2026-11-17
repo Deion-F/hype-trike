@@ -56,10 +56,8 @@ class Menu:
         for i, (r, it) in enumerate(zip(self.rects(W), self.items)):
             on = i == self.sel
             en = it.get("enabled", True)
-            col = (78, 70, 110) if on else (46, 42, 66)
-            pygame.draw.rect(surf, col, r, border_radius=7)
-            if on:
-                pygame.draw.rect(surf, C.ACCENT, r, 2, border_radius=7)
+            hud.flush_queued(surf, r)
+            button_face(surf, r, on, en)
             tc = C.HUD_FG if en else (130, 126, 150)
             hud.text(surf, it["label"], (r.centerx, r.centery - (5 if it.get("sub") else 0)),
                      24 if not it.get("sub") else 22, tc, anchor="center")
@@ -67,11 +65,35 @@ class Menu:
                 hud.text(surf, it["sub"], (r.centerx, r.centery + 8), 15, (200, 196, 220), anchor="center")
 
 
+def button_face(surf, rect, on=False, enabled=True):
+    """A chunky 16-bit button: dark outline, a two-tone face (lit top half),
+    a bright top edge, a shaded bottom lip; selected = a gold frame with a
+    lit corner and a pointer notch on the left."""
+    r = pygame.Rect(rect)
+    base = (84, 74, 124) if on else (50, 46, 74)
+    if not enabled:
+        base = (44, 42, 56)
+    top = tuple(min(255, c + 18) for c in base)
+    lip = tuple(max(0, c - 22) for c in base)
+    pygame.draw.rect(surf, (12, 8, 22), r, border_radius=7)
+    inner = r.inflate(-2, -2)
+    pygame.draw.rect(surf, lip, inner, border_radius=6)
+    face = pygame.Rect(inner.x, inner.y, inner.w, inner.h - 2)
+    pygame.draw.rect(surf, base, face, border_radius=6)
+    pygame.draw.rect(surf, top, (face.x, face.y, face.w, face.h // 2), border_top_left_radius=6,
+                     border_top_right_radius=6)
+    surf.fill(tuple(min(255, c + 60) for c in base), (face.x + 5, face.y, face.w - 10, 1))
+    if on:
+        pygame.draw.rect(surf, (150, 96, 0), r, 3, border_radius=7)
+        pygame.draw.rect(surf, C.ACCENT, r.inflate(-1, -1), 2, border_radius=7)
+        surf.fill((255, 240, 170), (r.x + 6, r.y + 1, min(24, r.w - 12), 1))
+        cy = r.centery
+        pygame.draw.polygon(surf, C.ACCENT, [(r.x + 4, cy - 4), (r.x + 8, cy), (r.x + 4, cy + 4)])
+
+
 def button(surf, rect, label, on=False, size=22, enabled=True):
     hud.flush_queued(surf, pygame.Rect(rect))
-    pygame.draw.rect(surf, (78, 70, 110) if on else (46, 42, 66), rect, border_radius=7)
-    if on:
-        pygame.draw.rect(surf, C.ACCENT, rect, 2, border_radius=7)
+    button_face(surf, rect, on, enabled)
     hud.text(surf, label, rect.center, size, C.HUD_FG if enabled else (130, 126, 150), anchor="center")
 
 

@@ -11,16 +11,23 @@ TITLE = "Hype Trike"
 FPS = 60                    # fixed simulation rate (ticks per second)
 
 # --- layout (logical pixels; height is fixed, width follows screen aspect) ---
-VIEW_H = 360
-DEFAULT_VIEW_W = 640
-MIN_VIEW_W = 560
-MAX_VIEW_W = 860
+# ZOOM: the logical canvas is this much bigger than the 360 px-tall design, so
+# the world (art drawn pixel for pixel) shows smaller and more of the track
+# fits on screen. The world band (designed for 360 px) sits WORLD_DY px down;
+# the extra height is more sky above it and a foreground strip below.
+ZOOM = 1.25
+DESIGN_H = 360
+VIEW_H = round(DESIGN_H * ZOOM)
+WORLD_DY = (VIEW_H - DESIGN_H) * 2 // 3
+DEFAULT_VIEW_W = round(640 * ZOOM)
+MIN_VIEW_W = round(560 * ZOOM)
+MAX_VIEW_W = round(860 * ZOOM)
 
 TILE_W = 80                 # one track column, 8 per 640 px view
 LANES = 4
 LANE_SPACING = 20
-LANE_BASE_Y = 236           # ground line of lane 0 (back); lane 3 is the front
-BIKE_SCREEN_X = 170         # bike stays put, the track scrolls
+LANE_BASE_Y = 236 + WORLD_DY  # ground line of lane 0 (back); lane 3 is the front
+BIKE_SCREEN_X = round(170 * ZOOM)  # bike stays put, the track scrolls
 
 def lane_y(lane_pos: float) -> float:
     """Screen y of the ground line for a (possibly fractional) lane."""
