@@ -171,3 +171,24 @@ def test_bike_upgrades_start_lower_and_level_past_stock_per_vehicle():
             hi = dict((u, f) for u, _, f in stat_bars(apply_tune(base_stats(v), {t: 2})))
             assert hi[t] > lo[t], (v, t)
             assert all(abs(hi[u] - lo[u]) < 1e-9 for u in hi if u != t), (v, t)
+
+
+def test_free_upgrades_setting_and_refunds():
+    from meta import shop
+    p = Profile()
+    p.earn_xp("dirt", 500)
+    assert shop.buy_upgrade(p, "dirt", "top_speed") and shop.buy_upgrade(p, "dirt", "top_speed")
+    paid = 500 - p.bike_xp("dirt")
+    assert paid > 0
+    p.settings["free_upgrades"] = True                       # testing: upgrades cost 0 XP
+    assert shop.upgrade_price(p, "dirt", "accel") == 0
+    assert shop.buy_upgrade(p, "dirt", "accel") and p.bike_xp("dirt") == 500 - paid
+    assert p.refund_bike("dirt") == paid                    # only XP actually paid comes back
+    assert p.bike_xp("dirt") == 500 and p.bike_levels("dirt") == {}
+    p.settings["free_upgrades"] = False
+    p.data["vehicles"].append("trike")
+    p.earn_xp("trike", 300)
+    assert shop.buy_upgrade(p, "trike", "air") and shop.buy_upgrade(p, "dirt", "air")
+    p.refund_all_bikes()
+    assert (p.bike_xp("dirt"), p.bike_xp("trike")) == (500, 300)
+    assert all(not lv for lv in p.data["bike_levels"].values())

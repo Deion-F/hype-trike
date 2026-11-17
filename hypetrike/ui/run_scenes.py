@@ -129,17 +129,15 @@ def draw_upgrade_strip(surf, ids, x, y, max_w, mode="one"):
 
 class HeatIntroScene(BackdropScene):
     def _draw_boss_portrait(self, surf, info, W):
-        """The boss, big, beside the panel: who you have to beat."""
-        from ui import art
-        cache = getattr(self, "_boss_sprites", None) or art.SpriteCache()
-        self._boss_sprites = cache
-        img = cache.vehicle(info["vehicle"], art.boss_key(self.heat.biome), (self.t // 8) % 2)
-        big = pygame.transform.scale(img, (img.get_width() * 2, img.get_height() * 2))
-        x = max(4, W // 2 - 200 - big.get_width() - 4)
-        glow = art.outlined(big, info["glow"], 2)
-        surf.blit(glow, (x - 2, 92))
-        hud.text(surf, info["name"], (x + big.get_width() // 2, 96 + big.get_height() + 4), 18,
+        """The boss's rig, beside the panel: what you have to wreck."""
+        from ui import boss_rig
+        img = boss_rig.portrait(self.heat.biome, self.t, 0.46)
+        x = max(0, W // 2 - 200 - img.get_width())
+        surf.blit(img, (x, 70))
+        hud.text(surf, info["name"], (x + img.get_width() // 2, 70 + img.get_height() - 2), 18,
                  info["glow"], anchor="center")
+        hud.text(surf, info["rig"], (x + img.get_width() // 2, 70 + img.get_height() + 14), 14,
+                 (220, 216, 236), anchor="center")
 
     def __init__(self, app, run, missed=None, lost_race=None, lost_boss=False):
         self.run = run
@@ -215,13 +213,16 @@ class HeatIntroScene(BackdropScene):
                      C.DANGER, anchor="center")
         hud.panel(surf, (W // 2 - 200, 82, 400, 150), 200)
         hud.text(surf, h.track.name, (W // 2, 102), 32, anchor="center")
-        hud.text(surf, f"Biome {b + 1}/{len(BIOMES)}  -  {h.track.laps} laps  -  {h.track.ncols} sections",
-                 (W // 2, 126), 18, (200, 196, 220), anchor="center")
+        if h.boss:
+            sub = f"Biome {b + 1}/{len(BIOMES)}  -  chase it down, hit its weak point 3 times"
+        else:
+            sub = f"Biome {b + 1}/{len(BIOMES)}  -  {h.track.laps} laps  -  {h.track.ncols} sections"
+        hud.text(surf, sub, (W // 2, 126), 18 if not h.boss else 16, (200, 196, 220), anchor="center")
         hud.text(surf, h.target.describe(), (W // 2, 154), 24, C.HUD_FG, anchor="center")
         if h.boss:
             from bosses import BOSSES
             info = BOSSES[h.biome]
-            for k, (power, what) in enumerate(info["powers"]):
+            for k, (power, what) in enumerate(info["intro"]):
                 y = 166 + k * 15
                 r = hud.text(surf, power + ":", (W // 2 - 192, y), 14, info["glow"])
                 hud.text(surf, what, (r.right + 5, y), 14, (220, 216, 236))

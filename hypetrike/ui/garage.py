@@ -12,7 +12,7 @@ import pygame
 import config as C
 from bike import VEHICLES, base_stats
 from meta import shop
-from meta.bike_tune import UPGRADES, MAX_LEVEL, apply_tune, price as up_price, stat_bars
+from meta.bike_tune import UPGRADES, MAX_LEVEL, apply_tune, stat_bars
 from ui import hud, art
 from ui.art import LIVERIES, BOOSTS, livery_key
 from ui.menus import BackdropScene, button
@@ -38,6 +38,7 @@ class GarageScene(BackdropScene):
         # BIKES: the bike being viewed and the upgrade row
         self.vi = list(VEHICLES).index(app.profile.selected["vehicle"])
         self.row = 0
+        self.confirm = None        # reset waiting for a second tap: ("bike" | "all", ticks left)
         # STYLE: cursor (row, column), starting on what's equipped
         self.srow = 0
         self.scol = [self._equipped_index(k) for k, _ in STYLE_ROWS]
@@ -57,6 +58,12 @@ class GarageScene(BackdropScene):
         W = self.app.view.width
         return pygame.Rect(W - 200, C.VIEW_H - 44, 188, 34)
 
+    def _reset_rects(self):
+        """BIKES tab: refund this bike's upgrades / every bike's (left of UPGRADE)."""
+        a = self._action_rect()
+        return {"all": pygame.Rect(a.x - 98, a.y, 92, 22),
+                "bike": pygame.Rect(a.x - 98 - 100, a.y, 94, 22)}
+
     def _leave(self):
         if self.back:
             self.back()
@@ -72,6 +79,9 @@ class GarageScene(BackdropScene):
         if self.flash:
             t, c, n = self.flash
             self.flash = (t, c, n - 1) if n > 1 else None
+        if self.confirm:
+            which, n = self.confirm
+            self.confirm = (which, n - 1) if n > 1 else None
 
     def frame(self, inp):
         for kind, _, x, y in inp.pointer_events:
@@ -124,7 +134,7 @@ class GarageScene(BackdropScene):
         return self.app.profile.bike_levels(self.vehicle)
 
     def _next_price(self, uid):
-        return up_price(self.vehicle, uid, self._levels().get(uid, 0))
+        return shop.upgrade_price(self.app.profile, self.vehicle, uid)
 
     # -- BIKES: layout -------------------------------------------------------------------
     def _chip_rects(self):
@@ -150,6 +160,8 @@ class GarageScene(BackdropScene):
             self.hover = None
         elif k in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_z):
             self._buy_upgrade()
+        elif k == pygame.K_r:
+            self._reset("all" if pygame.key.get_mods() & pygame.KMOD_SHIFT else "bike")
 
     def _bikes_tap(self, x, y):
         for i, r in enumerate(self._chip_rects()):
@@ -164,6 +176,29 @@ class GarageScene(BackdropScene):
                 return
         if self._action_rect().collidepoint(x, y):
             self._buy_upgrade()
+        for which, r in self._reset_rects().items():
+            if r.collidepoint(x, y):
+                self._reset(which)
+
+    CONFIRM_TICKS = 150
+
+    def _reset(self, which):
+        """Refund upgrades for this bike ("bike") or every bike ("all"). Asks for a
+        second tap / key press first, since it wipes levels."""
+        p = self.app.profile
+        name = VEHICLES[self.vehicle]["name"]
+        if not self.confirm or self.confirm[0] != which:
+            self.confirm = (which, self.CONFIRM_TICKS)
+            what = f"the {name}'s upgrades" if which == "bike" else "upgrades on ALL bikes"
+            self.app.audio.ui("click")
+            self._say(f"Refund {what}? Tap again to confirm", C.ACCENT, self.CONFIRM_TICKS)
+            return
+        self.confirm = None
+        back = p.refund_bike(self.vehicle) if which == "bike" else p.refund_all_bikes()
+        p.save()
+        self.app.audio.ui("buy")
+        who = name if which == "bike" else "All bikes"
+        self._say(f"{who} reset to stock: {back} XP refunded", C.GOOD)
 
     def _view_bike(self, i):
         """Show a bike; an unlocked one is also equipped (it's the one you'll ride)."""
@@ -278,7 +313,9 @@ class GarageScene(BackdropScene):
         else:
             self._draw_style(surf, W)
         if self.flash:
-            hud.text(surf, self.flash[0], (14, C.VIEW_H - 28), 18, self.flash[1], anchor="midleft")
+            y = C.VIEW_H - 9 if self.kind == "bikes" else C.VIEW_H - 28    # under the reset buttons
+            hud.text(surf, self.flash[0], (14, y), 16 if self.kind == "bikes" else 18, self.flash[1],
+                     anchor="midleft")
 
     # -- BIKES -----------------------------------------------------------------------------
     def _draw_bikes(self, surf, W):
@@ -374,6 +411,12 @@ class GarageScene(BackdropScene):
         else:
             label, enabled = f"UPGRADE  {cost} XP", p.bike_xp(v) >= cost
         button(surf, self._action_rect(), label, on=True, size=20, enabled=enabled)
+        conf = self.confirm[0] if self.confirm else None
+        for which, r in self._reset_rects().items():
+            text = "CONFIRM?" if conf == which else ("RESET BIKE" if which == "bike" else "RESET ALL")
+            button(surf, r, text, on=conf == which, size=14)
+        if p.settings.get("free_upgrades", False):
+            hud.text(surf, "FREE UPGRADES (testing)", (300, 14), 14, C.ACCENT)
 
     # -- STYLE -----------------------------------------------------------------------------
     def _draw_style(self, surf, W):
@@ -418,6 +461,12 @@ class GarageScene(BackdropScene):
             cost = shop.PRICES[kind][item]
             label, enabled = f"BUY  {cost} coins", p.currency >= cost
         button(surf, self._action_rect(), label, on=True, size=20, enabled=enabled)
+        conf = self.confirm[0] if self.confirm else None
+        for which, r in self._reset_rects().items():
+            text = "CONFIRM?" if conf == which else ("RESET BIKE" if which == "bike" else "RESET ALL")
+            button(surf, r, text, on=conf == which, size=14)
+        if p.settings.get("free_upgrades", False):
+            hud.text(surf, "FREE UPGRADES (testing)", (300, 14), 14, C.ACCENT)
 
     @staticmethod
     def _swatch(surf, kind, item, r):

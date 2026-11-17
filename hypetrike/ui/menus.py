@@ -273,6 +273,7 @@ SETTING_ROWS = [
     ("lane_guide", "Mouse lane dots", [(False, "Off"), (True, "On")]),
     ("record_races", "Race recordings", [(True, "On"), (False, "Off")]),
     ("speed_gauge", "Speed gauge (testing)", [(False, "Off"), (True, "On")]),
+    ("free_upgrades", "Free bike upgrades (testing)", [(False, "Off"), (True, "On")]),
     ("sfx_vol", "Sound effects", SLIDER),
     ("music_vol", "Music", SLIDER),
     ("smooth", "Desktop scaling", [(False, "Sharp"), (True, "Smooth")]),

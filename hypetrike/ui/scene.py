@@ -46,6 +46,7 @@ class RaceScene(Scene):
         self.target = target
         self.upgrades = list((context or {}).get("upgrades") or ())   # run upgrades, shown as icons
         self.race = Race(track, stats, rivals=rivals, rival_level=rival_level, seed=seed, boss=boss)
+        self.track = self.race.track           # a boss chase rides a live track it lays as it goes
         self.replay = replay
         if replay is not None:
             import replay as rp
@@ -147,7 +148,7 @@ class RaceScene(Scene):
         for e in ev:
             k = e[0]
             if k == "boss":
-                self._boss_popup(e[1], sx, sy)
+                self._boss_popup(e, sx, sy)
                 continue
             if k == "hoop":
                 self.popups.add("THROUGH THE HOOP!", (255, 150, 40), sx, sy - 50, 40)
@@ -239,13 +240,15 @@ class RaceScene(Scene):
                     self.renderer.emit_boost_sparks(rb, b.x)
         if self.ticks % 2 == 0:
             for bk in (b, *self.race.rivals):
-                if abs(bk.x - b.x) < self.app.view.width:
+                if bk.state != "gone" and abs(bk.x - b.x) < self.app.view.width:
                     self.renderer.emit_fire_embers(bk, b.x)
         if b.state == "ride" and b.boost_level >= 2:
             # hot / overheating: smoke, thicker as the heat nears the explosion
             danger = (b.temp - C.ONE_HOT_AT) / (C.TEMP_OVERHEAT - C.ONE_HOT_AT)
             if self.ticks % (3 if danger < 0.5 else 2) == 0:
                 self.renderer.emit_smoke(b, b.x, max(0.0, min(1.0, danger)))
+        if self.race.chase is not None:
+            self._chase_fx()
         self.renderer.particles.update()
         self.popups.update()
         if self.finish_hold > 0:
@@ -257,6 +260,8 @@ class RaceScene(Scene):
         rd = self.renderer
         cam = me.x
         for bk in [me, *self.race.rivals]:
+            if bk.state == "gone":
+                continue
             prev = self._air_prev.get(id(bk))
             if prev and prev[0] and not bk.airborne and bk.state in ("ride", "done"):
                 rd.emit_landing_dust(bk, max(0.15, min(1.0, -prev[1] / 6.0)))
@@ -293,22 +298,134 @@ class RaceScene(Scene):
         return BOSSES[self.race.boss]
 
     BOSS_POPUPS = {
-        "bomb": ("MUD BOMB INCOMING!", (200, 150, 90)), "quake": ("QUAKE!", (200, 150, 90)),
-        "devil": ("DUST DEVIL!", (236, 206, 140)), "shoved": ("SHOVED!", (236, 206, 140)),
-        "blackout": ("LIGHTS OUT...", (190, 140, 255)),
+        "bomb": ("MUD BOMB INCOMING!", (200, 150, 90)), "devil": ("DUST DEVIL!", (236, 206, 140)),
+        "shoved": ("SHOVED!", (236, 206, 140)), "blackout": ("LIGHTS OUT...", (190, 140, 255)),
         "pyro": ("PYRO CANNONS!", (255, 170, 60)), "scorched": ("SCORCHED +HEAT", (255, 120, 40)),
-        "crowd_boss": ("CROWD GOES WILD", (255, 215, 60)), "crowd_you": ("STOLE THE CROWD! +SPEED", C.GOOD),
         "eruption": ("ERUPTION!", (255, 110, 30)), "lava": ("LAVA! +SPEED +HEAT", (255, 130, 40)),
+        "window": ("IT'S BRAKING - STRIKE!", C.GOOD), "minion_bump": ("BLOCKED!", (230, 200, 200)),
+        "spotlight": ("SPOTLIGHT ON YOU - RAM IT!", (255, 230, 120)), "lantern": ("LANTERN MOVED", (200, 160, 255)),
+        "hatch": ("NEW HATCH LIT - GET IN ITS LANE!", (190, 230, 110)),
+        "escaping": ("IT'S GETTING AWAY!", C.DANGER), "escaped": ("IT GOT AWAY...", C.DANGER),
+        "wrecked": ("BOSS WRECKED!", C.ACCENT),
     }
+    # Bonking it without the weak point: what the boss needs instead.
+    BONK_HINTS = {
+        "roof": "TOO LOW - JUMP INTO THE GLOWING ZONE!", "hatch_lane": "WRONG LANE - GET IN THE HATCH'S LANE!",
+        "hatch_shut": "SHIELD'S DOWN - WAIT FOR IT TO LIFT!",
+        "lantern": "WRONG LANE - RAM THE LIT LANTERN!", "spotlight": "LAND A PERFECT FIRST!",
+        "core": "TOO COLD - RAM IT OVERHEATING!",
+    }
+    BOSS_SOUND = {"hit": "explode", "wrecked": "finish", "bonk": "rough", "minion_bump": "bump",
+                  "shoved": "rough", "scorched": "rough", "lava": "heatpad", "spotlight": "perfect",
+                  "escaping": "overheat", "window": "lap", "minion": None, "lantern": None}
 
-    def _boss_popup(self, kind, sx, sy):
-        text, col = self.BOSS_POPUPS.get(kind, (kind.upper(), C.ACCENT))
-        if kind in ("bomb", "devil", "blackout", "pyro", "eruption", "crowd_boss"):
-            self.popups.add(text, col, self.app.view.width // 2, 118, 60)        # the boss acts
+    def _boss_popup(self, e, sx, sy):
+        kind = e[1]
+        W = self.app.view.width
+        if kind == "lap":
+            self.popups.add(f"LAP {e[2]}", C.HUD_FG, W // 2, 112, 70)
+            self.app.audio.event("lap")
+            return
+        if kind == "hit":
+            hp = e[2]
+            self.popups.add("DIRECT HIT!" if hp > 0 else "KNOCKOUT!", C.ACCENT, sx + 40, sy - 56, 70)
+            if hp > 0:
+                self.popups.add(f"{hp} MORE TO WRECK IT - CHASE IT DOWN!", C.HUD_FG, W // 2, 112, 90)
+            ch, r = self.race.chase, self.renderer._rng
+            for col, n, sp in (((255, 230, 120), 26, 4.5), ((255, 120, 40), 18, 3.5), ((70, 64, 70), 10, 2.5)):
+                for _ in range(n):                                  # sparks off the rig's tail
+                    a = r.uniform(0, 2 * math.pi)
+                    self.renderer.particles.emit(ch.x, sy - 20 + r.uniform(-12, 12), math.cos(a) * sp - 1,
+                                                 math.sin(a) * sp, r.randint(16, 34), col, 2, 0.08)
+        elif kind == "bonk":
+            self.popups.add(self.BONK_HINTS.get(e[2], "BONK!"), (255, 170, 120), W // 2, 136, 70)
+            self.popups.add("IT'S PULLING AWAY - CATCH IT!", C.DANGER, W // 2, 88, 70)
+            self.renderer.emit_burst(self.race.bike, (255, 210, 80), 8, 2.5)
+        elif kind == "minion":
+            pass
+        elif kind in ("lantern", "wrecked"):
+            pass                                   # the lantern shows it; the result panel says it
         else:
-            self.popups.add(text, col, sx, sy - 44, 45)                        # it got you
-        self.app.audio.event("rough" if kind in ("shoved", "quake", "scorched") else "heatpad"
-                             if kind in ("lava", "crowd_you") else "beep")
+            text, col = self.BOSS_POPUPS.get(kind, (kind.upper(), C.ACCENT))
+            if kind in ("shoved", "scorched", "lava", "minion_bump"):
+                self.popups.add(text, col, sx, sy - 44, 45)                    # it got you
+            else:
+                self.popups.add(text, col, W // 2, 88, 70)                      # the boss acts
+        snd = self.BOSS_SOUND.get(kind, "beep")
+        if snd:
+            self.app.audio.event(snd)
+
+    def _chase_fx(self):
+        """Smoke and fire off a wrecked rig; sparks where a hit lands."""
+        ch = self.race.chase
+        rd = self.renderer
+        r = rd._rng
+        if ch.outcome == "won" and self.ticks % 2 == 0:
+            from bosses import RIG_LEN
+            x = ch.x + r.uniform(10, RIG_LEN - 10)
+            rd.particles.emit(x, C.lane_y(r.uniform(0, 2)) - r.uniform(20, 90), r.uniform(-0.4, 0.4),
+                              -r.uniform(0.6, 1.4), r.randint(30, 60),
+                              r.choice(((255, 140, 40), (255, 210, 80), (70, 64, 70), (90, 84, 90))),
+                              r.choice((2, 3, 4)), -0.01)
+
+    def _draw_rig(self, surf, cam):
+        from ui import boss_rig
+        ch = self.race.chase
+        sx = C.BIKE_SCREEN_X + (ch.x - cam)
+        W = self.app.view.width
+        if boss_rig.on_screen(sx, W):
+            if ch.weak in ("hatch", "lantern") and ch.outcome is None:
+                self._draw_lane_guide(surf, ch, sx, cam)
+            boss_rig.draw(surf, self.race.boss, sx, self.ticks,
+                          boss_rig.Look(ch, self.race.time_ticks, self.race.bike))
+        elif sx > W and ch.outcome is None:
+            self._draw_rig_pointer(surf, ch, W)
+
+    def _draw_lane_guide(self, surf, ch, sx, cam):
+        """Chevrons on the ground leading to the weak point's lane (hatch / lantern),
+        green while it's open to a hit."""
+        lane = ch.lantern
+        t = self.race.time_ticks
+        live = ch.weak == "lantern" or ch.shield(t) == "open"
+        from ui.boss_rig import HIT
+        col = HIT if live else (230, 230, 210)
+        tr = self.race.track
+        band = pygame.Surface((180, 12), pygame.SRCALPHA)        # the lane lit up behind it
+        for i in range(180):
+            band.fill((*col, int(110 * i / 180)), (i, 0, 1, 12))
+        y0 = C.lane_y(lane) + C.LANE_SPACING // 2 + 2 - tr.ground(ch.x - 10, lane)
+        surf.blit(band, (sx - 186, y0 - 9))
+        for k in range(8):
+            off = 16 + k * 22 - (self.ticks % 22)
+            wx = ch.x - off
+            x = sx - off
+            y = C.lane_y(lane) + C.LANE_SPACING // 2 + 2 - tr.ground(wx, lane)
+            pygame.draw.lines(surf, col, False, [(x - 7, y - 7), (x, y - 3), (x - 7, y + 1)], 3)
+
+    def _draw_rig_pointer(self, surf, ch, W):
+        """The boss is off screen ahead: an arrow at the right edge with the gap."""
+        from bosses import WARN_GAP
+        info = self._boss_info
+        gap = ch.gap(self.race.bike)
+        cols = gap / C.TILE_W
+        warn = gap > WARN_GAP
+        col = C.DANGER if warn and (self.ticks // 8) % 2 else info["glow"]
+        y = 200
+        pygame.draw.polygon(surf, (20, 16, 28), [(W - 4, y), (W - 22, y - 14), (W - 22, y + 14)])
+        pygame.draw.polygon(surf, col, [(W - 7, y), (W - 20, y - 10), (W - 20, y + 10)])
+        hud.text(surf, info["name"], (W - 26, y - 9), 14, col, anchor="topright")
+        hud.text(surf, f"{cols:.0f} ahead", (W - 26, y + 5), 14, C.HUD_FG, anchor="topright")
+
+    def _draw_spotlight(self, surf, rd, b, cam):
+        """Showstopper: after a PERFECT, a spotlight beam follows you until you ram it."""
+        ch = self.race.chase
+        if ch is None or ch.weak != "spotlight" or not ch.spotlit(self.race.time_ticks) or b.state != "ride":
+            return
+        sx, sy = rd.bike_screen_pos(b, cam)
+        beam = pygame.Surface(surf.get_size(), pygame.SRCALPHA)
+        a = 50 + int(20 * math.sin(self.ticks * 0.3))
+        pygame.draw.polygon(beam, (255, 240, 170, a), [(sx - 6, 0), (sx + 26, 0), (sx + 30, sy + 4), (sx - 26, sy + 4)])
+        surf.blit(beam, (0, 0))
 
     def _draw_blackout(self, surf, rd, b, cam):
         """Phantom's Blackout: the screen goes dark except a headlight round you."""
@@ -322,20 +439,6 @@ class RaceScene(Scene):
         for r, a in ((95, 0.75), (70, 0.45), (48, 0.15)):          # soft-edged headlight
             pygame.draw.circle(shade, (4, 2, 12, int(235 * k * a)), (int(sx + 40), int(sy - 10)), r)
         surf.blit(shade, (0, 0))
-
-    def _boss_glow(self):
-        """Pulsing outline in the boss's colour, so you always know who to beat."""
-        g = self._boss_info["glow"]
-        k = 0.65 + 0.35 * (1 + math.sin(self.ticks * 0.15)) / 2
-        return (tuple(int(c * k) for c in g), 2)
-
-    def _draw_boss_tag(self, surf, rd, b, cam):
-        sx, sy = rd.bike_screen_pos(b, cam)
-        x, y = int(sx + C.HEAT_ARC_DX), int(sy + C.HEAT_ARC_DY - C.HEAT_ARC_R - 10)
-        g = self._boss_info["glow"]
-        pygame.draw.polygon(surf, g, [(x - 6, y - 14), (x - 6, y - 19), (x - 3, y - 16), (x, y - 20),
-                                      (x + 3, y - 16), (x + 6, y - 19), (x + 6, y - 14)])     # crown
-        hud.text(surf, self._boss_info["name"], (x, y - 6), 15, g, anchor="center")
 
     def _draw_overheating(self, surf, rd, b, cam):
         """Above your heat gauge in the top zones: HOT (faster), OVERHEATING (fastest,
@@ -459,14 +562,14 @@ class RaceScene(Scene):
         pool = [k for k in LIVERIES if k != bike_paint(self.livery)]
         bikes = [(rb, pool[i % len(pool)], False)
                  for i, rb in enumerate(self.race.rivals)]
-        boss_bike = None
-        if self.race.boss is not None:
-            from ui.art import boss_key, minion_key
-            boss_bike = self.race.rivals[self.race.boss_i]
-            bikes = [(rb, boss_key(self.race.boss) if rb is boss_bike else minion_key(self.race.boss), False)
-                     for rb in self.race.rivals]
+        chase = self.race.chase
+        if chase is not None:
+            from ui.art import minion_key
+            bikes = [(rb, minion_key(self.race.boss), False) for rb in self.race.rivals if rb.state != "gone"]
         rd.draw_boss_trail(surf, self.race, cam, self.ticks)
         rd.draw_hoops(surf, self.track, cam, self.ticks, front=False)
+        if chase is not None:
+            self._draw_rig(surf, cam)
         if b.drafting:
             leader = self.race.slipstream_of(b)
             if leader is not None:
@@ -480,17 +583,15 @@ class RaceScene(Scene):
             if bk.speed > 0 and bk.state == "ride":
                 period = max(2, int(10 - bk.speed / 6))
                 frame = (bk.ticks // period) % 2
-            pal = self.boost_theme if me else (self._boss_info["boost"] if boss_bike else "flame")
+            pal = self.boost_theme if me else (self._boss_info["boost"] if chase else "flame")
             if bk.one_button and bk.state == "ride":
                 # everyone's exhaust flame is their heat gauge (rivals included)
                 rd.draw_heat_flame(surf, bk, cam, self.ticks, pal)
             elif me and self.boost_k > 0 and bk.state == "ride":
                 rd.draw_boost_flame(surf, bk, cam, self.ticks, self.boost_k, self.boost_lvl >= 2, pal)
-            outline = self._outline(bk) if me else (self._boss_glow() if bk is boss_bike else None)
+            outline = self._outline(bk) if me else None
             rd.draw_bike(surf, bk, cam, liv, frame, me, outline)
             rd.draw_bike_fire(surf, bk, cam, self.ticks)
-            if bk is boss_bike and bk.state in ("ride", "done"):
-                self._draw_boss_tag(surf, rd, bk, cam)
             if me and (self.race.countdown > 0 or self.race.time_ticks < self.YOU_TICKS) \
                     and bk.state == "ride":
                 self._draw_you(surf, rd, bk, cam)
@@ -498,8 +599,8 @@ class RaceScene(Scene):
                 rd.draw_heat_arc(surf, bk, cam, self.ticks, always=True)
                 self._draw_overheating(surf, rd, bk, cam)
         rd.draw_hoops(surf, self.track, cam, self.ticks, front=True)
-        rd.draw_boss_aura(surf, self.race, cam, self.ticks)
-        if self.race.brain is not None:
+        if chase is not None:
+            self._draw_spotlight(surf, rd, b, cam)
             self._draw_blackout(surf, rd, b, cam)
         if self.boost_k > 0 and b.state == "ride":
             rd.draw_boost_wind(surf, b, cam, self.ticks, self.boost_k, self.boost_lvl >= 2, self.boost_theme)
@@ -547,6 +648,21 @@ class RaceScene(Scene):
     def _draw_result(self, surf, W):
         r = self.result
         hud.panel(surf, (W // 2 - 140, 80, 280, 150), 220)
+        if self.race.chase is not None:
+            won = r.get("beat_boss")
+            hud.text(surf, "BOSS WRECKED!" if won else "IT GOT AWAY", (W // 2, 104), 36,
+                     C.ACCENT if won else C.DANGER, anchor="center")
+            hud.text(surf, f"TIME  {fmt_time(r['time'])}   HITS  {self.race.chase.hits}/{self.race.chase.hits + self.race.chase.hp}",
+                     (W // 2, 138), 22, anchor="center")
+            lines = [f"PERFECT LANDINGS  {r['perfect']}   CRASHES  {r['crashes']}"]
+            if "target_met" in r:
+                lines.append("TARGET MET!" if r["target_met"] else "TARGET MISSED")
+            for i, ln in enumerate(lines):
+                col = C.HUD_FG if not ln.startswith("TARGET") else (C.GOOD if r["target_met"] else C.DANGER)
+                hud.text(surf, ln, (W // 2, 164 + i * 18), 20, col, anchor="center")
+            if self.finish_hold <= 0 and (self.ticks // 20) % 2 == 0:
+                hud.text(surf, "TAP / ENTER TO CONTINUE", (W // 2, 218), 18, anchor="center")
+            return
         hud.text(surf, "FINISH!", (W // 2, 104), 40, C.ACCENT, anchor="center")
         hud.text(surf, f"TIME  {fmt_time(r['time'])}", (W // 2, 138), 26, anchor="center")
         lines = []

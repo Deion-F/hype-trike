@@ -148,6 +148,10 @@ PROFILES = {
     SKY:       [(0, SKY_H), (TILE_W, SKY_H)],
     SKY_DOWN:  [(0, SKY_H), (16, SKY_H), (TILE_W, DECK_H)],
 }
+# Chained descents: a low descent straight after a high one loses its lip and carries
+# on at the same slope, so the two read as one long drop (the lip between them used
+# to launch you off the first slope into a hop and a wrong-angle landing on the second).
+CHAINED = {DOWN_LO: ((DOWN_HI,), [(0, MESA_LO), (64, 0), (TILE_W, 0)])}
 # A split column's own profile is its front lanes' (edge chaining, editor, minimap).
 for _t, (_lo, _hi) in SPLITS.items():
     PROFILES[_t] = PROFILES[_lo]
@@ -194,12 +198,56 @@ class Track:
         self._h = self._heights(None)
         self._h_up = self._heights(0) if self.has_split else self._h
 
+    def profile_at(self, col, lane=None):
+        """The height profile lane `lane` rides in column col: the tile's own, or
+        its chained form when it follows the tile it chains from (CHAINED)."""
+        t = lane_tile(self.terrain[col], lane)
+        chain = CHAINED.get(t)
+        if chain and col > 0 and lane_tile(self.terrain[col - 1], lane) in chain[0]:
+            return chain[1]
+        return PROFILES[t]
+
     def _heights(self, lane):
         hs = []
-        for t in self.terrain:
-            prof = PROFILES[lane_tile(t, lane)]
+        for col in range(len(self.terrain)):
+            prof = self.profile_at(col, lane)
             hs.extend(_sample(prof, lx) for lx in range(TILE_W))
         return hs
+
+    # -- live edits (a boss laying track mid-race) ----------------------------------------
+    # Only the changed column's heights are rewritten, so this is cheap enough to do
+    # every tick. col_rev counts edits per column so the renderer can redraw it.
+    def set_column(self, col, terrain, surface=None, material=DIRT):
+        """Rewrite one column in place: terrain tile, per-lane surfaces, material."""
+        self.terrain[col] = terrain
+        for lane in range(LANES):
+            self.surface[lane][col] = surface[lane] if surface else NONE
+        self.material[col] = material
+        if terrain in SPLITS and not self.has_split:
+            self.has_split = True
+            self._h_up = list(self._h)
+        revs = self.__dict__.setdefault("col_rev", {})
+        for c in (col, col + 1):                  # the next column may chain off this one
+            if c >= self.ncols:
+                break
+            lo = c * TILE_W
+            prof = self.profile_at(c, None)
+            self._h[lo:lo + TILE_W] = [_sample(prof, lx) for lx in range(TILE_W)]
+            if self.has_split:
+                prof = self.profile_at(c, 0)
+                self._h_up[lo:lo + TILE_W] = [_sample(prof, lx) for lx in range(TILE_W)]
+            revs[c] = revs.get(c, 0) + 1
+
+    def append_flat(self, n):
+        """Add n flat dirt columns at the end (room for a boss to lay more track)."""
+        self.terrain.extend([FLAT] * n)
+        for lane in range(LANES):
+            self.surface[lane].extend([NONE] * n)
+        self.material.extend([DIRT] * n)
+        self._h.extend([0.0] * (n * TILE_W))
+        if self._h_up is not self._h:
+            self._h_up.extend([0.0] * (n * TILE_W))
+        self.length = self.ncols * TILE_W
 
     @property
     def hoops(self):

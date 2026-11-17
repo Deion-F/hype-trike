@@ -18,8 +18,9 @@ used, and log what you did.
   races each: two normal races and a **boss**. That is `RUN_HEATS` = 15 races
   ("heats" in the code and recordings; `heat` index 0..14). Each race is
   against 3 CPU rivals with a placing target; missing one ends the run.
-  Normal races need a podium (top 3 in Valley/Desert, top 2 after), bosses a
-  win. After a normal race the player picks 1 of 3 regular upgrades; after a
+  Normal races need a podium (top 3 in Valley/Desert, top 2 after); a boss
+  race is a chase where you must wreck the boss (3 weak-point hits) before it
+  gets away. After a normal race the player picks 1 of 3 regular upgrades; after a
   boss, 1 of 3 **elite** upgrades (`tier="elite"` in
   `hypetrike/run/upgrades.py`). Races 8 and 11 (second race of Night and
   Stadium) add a modifier. **All three Volcano races** have the lava physics:
@@ -66,9 +67,17 @@ Run everything from the repo root with `.venv/bin/python`.
   (keep, band): rivals ride the player's one-button heat model through
   `RivalPilot`, so `keep` decides whether they cruise under the boost band or
   ride in it (never the red). All driven by `rival_level` 0..1.
-- **Bosses** (`hypetrike/bosses.py`): the best-setup rival in each boss race
-  is promoted. It always boosts and leaves a lane trail (`TRAIL_LIFE`,
-  `TRAIL_REACH`, `TRAIL_HEAT`). Rate boss races separately from normal ones.
+- **Bosses** (`hypetrike/bosses.py`): a chase against a 4-lane rig you can't
+  pass. Knobs: its speed (each boss's `pace` x the player's `max_speed_b`,
+  `FAR_*`, `VFAR_*`, `RECOVER_*`, `ENGAGED_DROP`, `INTRO_*`, `FLEE_*`, `SURGE_*`), the escape point (`LOSE_GAP`,
+  `WARN_GAP`, `MAX_TICKS`), how often it opens up (`WINDOW_EVERY`,
+  `WINDOW_TICKS`, `WINDOW_K`, `LANTERN_*`, `SPOT_TICKS`, `ROOF_MIN`), what it
+  lays (`PIECES`), its minions (`MINION_*`, `minion_setup`), `HP`, and the
+  looped track's length (`BOSS_TRACK_LEN_K` in `run/manager.py`). The
+  recording summary's `boss` block has outcome, hits, bonks, max gap and
+  minion bumps. Sims ride with `hunter_controls` (an AI that knows the weak
+  points), so they overrate humans on bosses: lean on recordings. Rate boss
+  races separately from normal ones.
 - **Player bike tuning** (`meta/bike_tune.py`): players start with weaker bikes
   (level 0) and tune them up per vehicle. Recordings store `context.bike_levels`.
   Sims ride full stats, so they show a tuned player. Read low tuning levels in

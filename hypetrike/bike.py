@@ -264,6 +264,17 @@ class Bike:
                 return t, x
         return max_ticks, x
 
+    KINK_PX = 6                      # a landing can match the slope just before / after a kink
+
+    def _landing_slope(self, x, angle):
+        """The slope (deg) a landing at x with this nose angle is judged against: the
+        one under it, or the one just either side when that's closer. On a kink (a
+        descent meeting flat ground) the slope at the point is the average of the
+        two, which no sensible angle matches, so matching either side counts."""
+        tr, lane = self.track, self.lane_index
+        cands = [math.degrees(math.atan(tr.slope(x + dx, lane))) for dx in (0, -self.KINK_PX, self.KINK_PX)]
+        return min(cands, key=lambda sl: abs(angle - sl))
+
     def landing_error(self):
         """Mid-air on a real jump: the nose-vs-slope error it would land with if
         you let go now (the nose keeps dropping until touchdown). None on the
@@ -273,9 +284,8 @@ class Bike:
         t, x = self.predicted_landing()
         if self.air_ticks + t < C.MICRO_HOP_TICKS or self.track.terrain_at(x, self.lane_index) in PITS:
             return None
-        slope = math.degrees(math.atan(self.track.slope(x, self.lane_index)))
         land_angle = max(-85.0, self.angle - self.stats.nose_drop * t)
-        return land_angle - slope
+        return land_angle - self._landing_slope(x, land_angle)
 
     def landing_quality(self):
         """0 (PERFECT) .. 1 (crash) for the landing you're lined up for, or None:
@@ -647,7 +657,7 @@ class Bike:
         if self.h > g:
             # Grace: lined up for a PERFECT just above the ground counts for a few
             # ticks, so a tiny last-moment twitch doesn't throw it away.
-            slope_deg = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
+            slope_deg = self._landing_slope(self.x, self.angle)
             if self.h - g <= C.PERFECT_GRACE_PX and \
                     abs(self.angle - slope_deg) <= self.stats.land_perfect * self._land_mult():
                 self._perfect_grace = C.PERFECT_GRACE_TICKS
@@ -689,7 +699,7 @@ class Bike:
             # Caught the far lip: pop up onto the next column.
             self.x = (int(self.x // C.TILE_W) + 1) * C.TILE_W + 1
             self.h = self.track.ground(self.x, self.lane_index)
-        slope_deg = math.degrees(math.atan(self.track.slope(self.x, self.lane_index)))
+        slope_deg = self._landing_slope(self.x, self.angle)
         err = self.angle - slope_deg
         if self.air_ticks < C.MICRO_HOP_TICKS:
             # Little hops (whoops, ramp lips): bad angle costs speed, not a crash.

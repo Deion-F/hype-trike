@@ -120,7 +120,7 @@ LIBRARY = [
     # cycle: ride onto it lifted and you fall), while the back two lanes climb
     # a narrow skyway over it. Pick the back lanes before the split; you can
     # drop off the skyway onto the deck but not climb up to it.
-    Segment("split bridge", "..oryyyZyne....", 4, runway=3, heat_discount=6, min_depth=2,
+    Segment("split bridge", "..oryyyZynbe....", 4, runway=3, heat_discount=6, min_depth=2,
             complex=True),
 ]
 
@@ -179,12 +179,12 @@ def _pick(rng, depth, runway, diff_target, last_name):
     return cands[-1][0]
 
 
-def generate(seed, depth=0, modifiers=(), validate_with=None, max_attempts=8):
-    """Build a validated track. Returns GenResult."""
+def generate(seed, depth=0, modifiers=(), validate_with=None, max_attempts=8, length=None):
+    """Build a validated track (length: columns, default length_for(depth)). Returns GenResult."""
     from track.validator import validate
     for attempt in range(max_attempts):
         rng = random.Random((seed * 1_000_003 + attempt * 7919) & 0xFFFFFFFF)
-        track = _assemble(rng, depth, modifiers)
+        track = _assemble(rng, depth, modifiers, length)
         track.meta.update({"seed": seed, "depth": depth, "attempt": attempt,
                            "modifiers": list(modifiers)})
         softened = 0
@@ -220,8 +220,8 @@ def _riders(validate_with):
     return riders + [s for s in validate_with if s is not None]
 
 
-def _assemble(rng, depth, modifiers):
-    n_target = length_for(depth)
+def _assemble(rng, depth, modifiers, length=None):
+    n_target = length or length_for(depth)
     diff = target_difficulty(depth)
     if "gentle" in modifiers:
         diff = 1.0

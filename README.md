@@ -28,7 +28,16 @@ different. Sit in a rival's slipstream to heat up and catch them.
 
 Runs give you 3 lives: a missed race costs one (ride it again), a lost boss
 costs two and its elite upgrade. Every race earns your bike XP to spend on its
-upgrades in the Garage; coins only buy paint, rider and boost colours.
+upgrades in the Garage; coins only buy paint, rider and boost colours. The
+Garage's RESET BIKE / RESET ALL buttons refund upgrades (tap twice, or `R` /
+`Shift+R`), and Settings → "Free bike upgrades (testing)" makes every level cost 0 XP.
+
+Boss races are chases. Each biome's boss drives a huge rig that fills all four
+lanes, so you can't pass it. It drives off at the start, lays the track as it
+goes and drops slower minions behind it. Catch it and hit its weak point three
+times (a shielded hatch, a high vent, a lantern, a spotlight or its core: the intro says
+which, and the hit zone glows green) before it
+gets too far ahead.
 
 ## Play on your Android phone (local Wi-Fi)
 

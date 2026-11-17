@@ -85,6 +85,10 @@ class Popups:
             if p[0] == s:          # refresh instead of stacking duplicates
                 p[2], p[3], p[4] = ticks, x, y
                 return
+        for _ in range(4):         # another message already there: stack below it
+            if not any(abs(p[3] - x) < 2 and abs(p[4] - y) < 14 for p in self.items):
+                break
+            y += 16
         self.items.append([s, color, ticks, x, y])
 
     def update(self):
@@ -147,7 +151,46 @@ def heat_gauge_one(surf, temp, boost_level, x, y, w=150, h=10, ticks=0):
 
 
 def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=False, speed=False):
-    b = race.bike
+    if getattr(race, "chase", None) is not None:
+        boss_hud(surf, race, width, ticks)
+    else:
+        _lap_hud(surf, race, width, best)
+    _common_hud(surf, race, width, ticks, extra_left, heat_bar, speed)
+
+
+def boss_hud(surf, race, width, ticks):
+    """Boss chase: the clock, the boss's hits left, and how far ahead it is."""
+    from bosses import BOSSES, HP, ENGAGE_GAP, WARN_GAP, LOSE_GAP
+    ch = race.chase
+    info = BOSSES[race.boss]
+    panel(surf, (6, 6, 110, 40))
+    text(surf, "CHASE", (12, 10), 18)
+    text(surf, fmt_time(race.clock), (12, 26), 22, C.ACCENT)
+    w = 230
+    x0 = width // 2 - w // 2
+    panel(surf, (x0, 6, w, 44))
+    text(surf, info["name"], (x0 + 8, 9), 16, info["glow"])
+    for i in range(HP):                                     # hits still needed: full pips
+        cx = x0 + w - 14 - i * 16
+        full = i < ch.hp
+        pygame.draw.circle(surf, (20, 16, 28), (cx, 17), 7)
+        pygame.draw.circle(surf, info["glow"] if full else (70, 66, 86), (cx, 17), 5)
+    gap = max(0.0, ch.gap(race.bike))
+    k = min(1.0, gap / LOSE_GAP)
+    bx, bw = x0 + 8, w - 16
+    surf.fill((40, 36, 52), (bx, 32, bw, 10))
+    col = C.GOOD if gap < ENGAGE_GAP else (C.ACCENT if gap < WARN_GAP else C.DANGER)
+    if gap >= WARN_GAP and (ticks // 8) % 2:
+        col = (255, 230, 220)
+    surf.fill(col, (bx, 32, max(2, int(bw * k)), 10))
+    wx = bx + int(bw * WARN_GAP / LOSE_GAP)
+    surf.fill((240, 240, 240), (wx, 30, 1, 14))
+    text(surf, "GAP", (bx + 3, 31), 11, (20, 16, 28), shadow=False)
+    if gap >= WARN_GAP and ch.outcome is None and (ticks // 12) % 2 == 0:
+        text(surf, "IT'S GETTING AWAY - CATCH UP!", (width // 2, 62), 18, C.DANGER, anchor="center")
+
+
+def _lap_hud(surf, race, width, best):
     panel(surf, (6, 6, 150, 40))
     lap = min(race.laps_done + 1, race.track.laps)
     text(surf, f"LAP {lap}/{race.track.laps}", (12, 10), 18)
@@ -162,6 +205,10 @@ def race_hud(surf, race, width, ticks, extra_left=None, best=None, heat_bar=Fals
         panel(surf, (width // 2 - 40, 6, 80, 26))
         text(surf, f"P{race.position()}/{n}", (width // 2, 19), 24,
              C.ACCENT if race.position() == 1 else C.HUD_FG, anchor="center")
+
+
+def _common_hud(surf, race, width, ticks, extra_left, heat_bar, speed):
+    b = race.bike
     if extra_left:
         for i, line in enumerate(extra_left):
             text(surf, line, (12, 52 + i * 14), 16)

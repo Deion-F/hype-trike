@@ -96,7 +96,7 @@ DEFAULTS = {
                  "lane_mode": "swipe", "button_scale": 1.0, "swap_sides": False,
                  "touch_ui": "auto", "mouse_steer": "button", "throttle_mode": "one",
                  "mouse_wheelie": "ramps", "heat_gauge": "both", "lane_guide": False,
-                 "mouse_lanes": "hover", "record_races": True, "speed_gauge": False, "air_lane_lock": True,
+                 "mouse_lanes": "hover", "record_races": True, "speed_gauge": False, "free_upgrades": False, "air_lane_lock": True,
                  "sfx_vol": 1.0, "music_vol": 1.0, "settings_v": 3},
     "tracks": {},
     "best_laps": {},
@@ -222,6 +222,27 @@ class Profile:
             return False
         self.data["bike_xp"][vehicle] -= amount
         return True
+
+    def bike_xp_spent(self, vehicle):
+        """XP spent on a bike's upgrades so far: lifetime XP minus what's unspent
+        (exact, since XP only ever goes to upgrades; free test buys spend none)."""
+        total = int(self.data.setdefault("bike_xp_total", {}).get(vehicle, 0))
+        return max(0, total - self.bike_xp(vehicle))
+
+    def refund_bike(self, vehicle):
+        """Reset a bike's upgrades to level 0 and give back all the XP spent on
+        them. Returns the XP refunded."""
+        back = self.bike_xp_spent(vehicle)
+        self.data.setdefault("bike_levels", {})[vehicle] = {}
+        if back:
+            book = self.data.setdefault("bike_xp", {})
+            book[vehicle] = book.get(vehicle, 0) + back
+        return back
+
+    def refund_all_bikes(self):
+        """refund_bike for every bike with upgrades or spent XP. Returns total XP back."""
+        bikes = set(self.data.get("bike_levels") or {}) | set(self.data.get("bike_xp_total") or {})
+        return sum(self.refund_bike(v) for v in sorted(bikes))
 
     def player_stats(self, vehicle=None):
         """The chosen vehicle at the player's upgrade levels (no run upgrades)."""

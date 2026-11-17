@@ -34,7 +34,7 @@ WEB = sys.platform == "emscripten"
 # Events worth logging (bike.step / race.step event names).
 LOGGED = {"perfect", "land", "rough", "rough_free", "bounce", "crash", "explode", "forgiven", "overheat",
           "cooled", "vent", "heatpad", "coolant", "splash", "lava", "bump", "recovered",
-          "lap", "finish", "go"}
+          "lap", "finish", "go", "boss"}
 
 
 def recordings_dir():
@@ -89,7 +89,7 @@ class Recorder:
     def __init__(self, race, livery="flame", context=None, settings=None):
         from editor.io import to_compact
         self.race = race
-        tr = race.track
+        tr = getattr(race, "source_track", race.track)     # a boss chase lays more as it goes
         b = race.bike
         self.data = {
             "v": VERSION,
@@ -206,6 +206,14 @@ class Recorder:
             "max_temp": _r(self._max_temp, 1),
             "rivals": rivals,
         }
+        ch = getattr(race, "chase", None)
+        if ch is not None:
+            self.data["summary"]["boss"] = {
+                "biome": ch.biome, "outcome": ch.outcome, "hits": ch.hits, "hp_left": ch.hp,
+                "bonks": ch.bonks, "max_gap_cols": _r(ch.max_gap / C.TILE_W, 1),
+                "minions": len(race.rivals), "cols_laid": ch.paver.built,
+                "minion_bumps": sum(1 for e in ev if e[1] == 0 and e[2] == "boss" and len(e) > 4
+                                    and e[4] == "minion_bump")}
         return self.data
 
 

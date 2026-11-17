@@ -132,12 +132,15 @@ class WorldRenderer:
         left = cam_x - C.BIKE_SCREEN_X
         first = int(math.floor(left / C.TILE_W))
         last = int(math.floor((left + self.width) / C.TILE_W)) + 1
+        revs = track.__dict__.get("col_rev") or {}      # columns a boss re-laid mid-race
         for ci in range(first, last + 1):
             col = ci % track.ncols
-            img = self._col_cache.get(col)
-            if img is None:
-                img = self._render_column(track, col)
-                self._col_cache[col] = img
+            rev = revs.get(col, 0)
+            hit = self._col_cache.get(col)
+            if hit is None or hit[0] != rev:
+                hit = (rev, self._render_column(track, col))
+                self._col_cache[col] = hit
+            img = hit[1]
             sx0 = int(round(C.BIKE_SCREEN_X + ci * C.TILE_W - cam_x))
             surf.blit(img, (sx0, self.COL_TOP))
             if track.terrain[col] == DRAW:
@@ -165,7 +168,7 @@ class WorldRenderer:
                            track.terrain[(col - 1) % track.ncols] == GAP,
                            track.terrain[(col + 1) % track.ncols] == GAP)
             return
-        prof = PROFILES[t]
+        prof = track.profile_at(col)
         for (x0, h0), (x1, h1) in zip(prof, prof[1:]):
             if x1 <= x0:
                 continue
@@ -747,19 +750,6 @@ class WorldRenderer:
                                 -bike.vx * 0.4 + self._rng.uniform(-0.4, 0.4), self._rng.uniform(-1.6, -0.6),
                                 self._rng.randint(10, 22), (255, 160, 40) if self._rng.random() < 0.6
                                 else (255, 230, 120), size=2, gravity=-0.02)
-
-    def draw_boss_aura(self, surf, race, cam_x, t):
-        """A ring round the boss while the player is inside its aura (Hex, Heat Wave,
-        Sandblast), drawn over the bikes."""
-        brain = race.brain
-        if brain is None or not brain.aura_on:
-            return
-        from bosses import BOSSES
-        boss = race.rivals[race.boss_i]
-        sx, sy = self.bike_screen_pos(boss, cam_x)
-        g = BOSSES[race.boss]["glow"]
-        r = 26 + 3 * math.sin(t * 0.2)
-        pygame.draw.ellipse(surf, g, (sx - r * 1.4, sy - r * 0.5 - 8, r * 2.8, r), 2)
 
     def _draw_explosion(self, surf, bike, sx, sy, livery, vehicle):
         """Fireball, rider launched sky-high, then a new bike parachutes in."""

@@ -80,6 +80,15 @@ class Race:
     def __init__(self, track, stats=None, rivals=0, lane=1, countdown=True,
                  rival_level=0.5, seed=0, boss=None):
         from track.validator import GhostAI
+        from bosses import BOSSES
+        # Boss race: a chase (bosses.BossChase). The given track is the "reel" the
+        # boss copies normal track from; the race runs on a live track it lays as it
+        # goes. Recordings keep the reel (source_track), so replays rebuild the same.
+        self.source_track = track
+        self.boss = boss if boss in BOSSES else None
+        if self.boss:
+            from bosses import Paver
+            track = Paver.live_track(track)
         self.track = track
         self.bike = Bike(track, stats or base_stats(), lane=lane)
         self.countdown = C.COUNTDOWN_TICKS if countdown else 0
@@ -96,7 +105,15 @@ class Race:
         self.rival_ai = []
         self.rival_finish = []
         self.rival_kits = []             # each rival's Starter Kit levels this race
+        self.trails = []                 # minion trails (bosses.BossTrail)
+        self.chase = None                # the boss (bosses.BossChase)
         lanes = [l for l in range(C.LANES) if l != lane]
+        if self.boss:
+            for i in range(rivals):          # a few of the boss's crew line up with you
+                self.add_minion(lanes[i % len(lanes)], C.START_X)
+            from bosses import BossChase
+            self.chase = BossChase(self, self.boss, self.source_track, seed, rival_level)
+            return
         from meta.kit import apply_kit
         for i in range(rivals):
             rs = base_stats("dirt")
@@ -112,28 +129,33 @@ class Race:
             self.rival_kits.append(kit)
             self.rival_ai.append(RivalPilot(GhostAI(seed=seed * 31 + i, **ai), keep, band))
             self.rival_finish.append(None)
-        # Boss race: the rival with the best setup becomes the biome's boss.
-        from bosses import BOSSES, BossTrail, BossBrain, boss_score, MINION_LIFE, MINION_K
-        self.boss = boss if boss in BOSSES and self.rivals else None
-        self.boss_i = None
-        self.trails = []                 # boss + minion trails (bosses.BossTrail)
-        self.brain = None                # the boss's powers (bosses.BossBrain)
-        if self.boss:
-            info = BOSSES[self.boss]
-            self.boss_i = max(range(len(self.rivals)),
-                              key=lambda i: boss_score(self.rivals[i].stats, self.rival_kits[i]))
-            rb = self.rivals[self.boss_i]
-            rb.stats.vehicle = info["vehicle"]                  # the boss's themed ride (looks)
-            rb.stats.max_speed_b = max(rb.stats.max_speed_b, C.SPEED_MAX_B)
-            pilot = self.rival_ai[self.boss_i]
-            pilot.keep, pilot.band = C.ONE_BOOST_AT + 4 + 9 * max(rival_level, 0.5), 2.0   # always boosting
-            self.brain = BossBrain(self.boss, seed)
-            # everyone else rides as the boss's minions: a weaker, shorter trail
-            for i in range(len(self.rivals)):
-                if i == self.boss_i:
-                    self.trails.append(BossTrail(info["trail"], i))
-                else:
-                    self.trails.append(BossTrail(info["trail"], i, MINION_LIFE, MINION_K))
+
+    @property
+    def brain(self):
+        """Old name: the boss's state (hazards, blackout) for the renderer."""
+        return self.chase
+
+    def add_minion(self, lane, x, speed=0.0):
+        """A boss minion: a slow crew rider with a weak trail of the boss's kind."""
+        from bosses import BOSSES, BossTrail, minion_setup, MINION_LIFE, MINION_K
+        from track.validator import GhostAI
+        i = len(self.rivals)
+        tweaks, ai, (keep, band) = minion_setup(self.rival_level)
+        rs = base_stats("dirt")
+        for k, v in tweaks.items():
+            setattr(rs, k, v)
+        rb = Bike(self.track, rs, lane=lane, x=x)
+        rb.one_button = True
+        rb.ticks = self.bike.ticks                     # drawbridges run on the race clock
+        if speed > 0:
+            rb.temp = keep
+            rb.speed = min(speed, rb.heat_speed())
+        self.rivals.append(rb)
+        self.rival_kits.append({})
+        self.rival_ai.append(RivalPilot(GhostAI(seed=self.seed * 31 + i, **ai), keep, band))
+        self.rival_finish.append(None)
+        self.trails.append(BossTrail(BOSSES[self.boss]["trail"], i, MINION_LIFE, MINION_K))
+        return rb
 
     @property
     def started(self):
@@ -184,13 +206,10 @@ class Race:
         return best[1] if best else None
 
     def beat_boss(self):
-        """Boss race: the player crossed the line ahead of the boss (None: no boss)."""
+        """Boss race: the player wrecked the boss (None: no boss)."""
         if not self.boss:
             return None
-        if not self.finished:
-            return False
-        fin = self.rival_finish[self.boss_i]
-        return fin is None or self.finish_ticks < fin
+        return self.chase.outcome == "won"
 
     def step(self, ctl: Controls):
         self.last_rival_events = []
@@ -199,43 +218,38 @@ class Race:
             return [("go",)] if self.countdown == 0 else []
         self.time_ticks += 1
         self.bike.drafting = self.slipstream_of(self.bike) is not None
-        boss_bike = self.rivals[self.boss_i] if self.boss else None
-        if self.brain is not None:
-            self.brain.player_mods(self, boss_bike)
-            hit = [tr for tr in self.trails if tr.hits(self.bike)]
-            if self.brain.mud_under(self.bike, self.time_ticks):
-                self.bike.trail, self.bike.trail_k = "mud", 1.0      # a Mud Bomb splat
-            elif hit:
-                strongest = max(hit, key=lambda tr: tr.k)
-                self.bike.trail, self.bike.trail_k = strongest.kind, strongest.k
-            else:
-                self.bike.trail, self.bike.trail_k = None, 1.0
+        if self.chase is not None:
+            self.chase.before(self)
         ev = self.bike.step(ctl if not self.finished else Controls())
         finish_x = C.START_X + self.track.length * self.track.laps
-        if not self.finished:
+        if not self.finished and self.chase is None:
             lap_idx = int((self.bike.x - C.START_X) // self.track.length)
             while lap_idx > self.laps_done and self.laps_done < self.track.laps:
                 self.lap_times.append(self.time_ticks - self._lap_start)
                 self._lap_start = self.time_ticks
                 ev.append(("lap", self.lap_times[-1]))
             if self.bike.x >= finish_x:
-                self.finished = True
-                self.finish_ticks = self.time_ticks
-                self.bike.state = "done"
-                ev.append(("finish", self.time_ticks))
+                self._finish(ev)
         for i, (rb, ai) in enumerate(zip(self.rivals, self.rival_ai)):
+            if rb.state == "gone":
+                continue
             rev = rb.step(ai.controls(rb) if self.rival_finish[i] is None else Controls())
             if rev:
                 self.last_rival_events.append((i, rev))
-            if self.rival_finish[i] is None and rb.x >= finish_x:
+            if self.chase is None and self.rival_finish[i] is None and rb.x >= finish_x:
                 self.rival_finish[i] = self.time_ticks
                 rb.state = "done"
-        if self.brain is not None:
-            for tr in self.trails:
-                tr.update(self.rivals[tr.owner], self.time_ticks)
-            boss_ev = next((e for i, e in self.last_rival_events if i == self.boss_i), [])
-            ev.extend(self.brain.update(self, boss_bike, ev, boss_ev))
+        if self.chase is not None:
+            ev.extend(self.chase.after(self, ev))
+            if self.chase.outcome and not self.finished:
+                self._finish(ev)
         return ev
+
+    def _finish(self, ev):
+        self.finished = True
+        self.finish_ticks = self.time_ticks
+        self.bike.state = "done" if self.bike.state in ("ride", "overheat") else self.bike.state
+        ev.append(("finish", self.time_ticks))
 
 
 def fmt_time(ticks):

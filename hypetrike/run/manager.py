@@ -17,7 +17,7 @@ from bike import base_stats
 from race import fmt_time
 from meta.bike_tune import apply_tune, xp_for_race
 from run.upgrades import apply_upgrades, offer
-from track.generator import generate
+from track.generator import generate, length_for
 
 # Biome order, easiest first. Only the Volcano has its own physics (hot air:
 # heat rises faster, cools slower; puddles are lava pits), so it closes the
@@ -29,6 +29,7 @@ from track.generator import generate
 # canyon, and the Volcano boss rides the deepest tracks.
 BIOMES = ("valley", "desert", "night", "stadium", "lava")
 RACES_PER_BIOME = 3                      # two normal races, then the boss
+BOSS_TRACK_LEN_K = 2                     # a boss chase's looped track is this many races long
 RUN_HEATS = len(BIOMES) * RACES_PER_BIOME
 LIVES = 3                                # a missed normal race costs one ...
 BOSS_LOSS_LIVES = 2                      # ... a lost boss race two (and its elite upgrade)
@@ -112,13 +113,13 @@ def pick_modifier(rng, i):
 
 class Target:
     def __init__(self, kind, value=None, modifier=None):
-        self.kind = kind          # "time" | "place" | "survive" | "boss" (finish ahead of the boss)
+        self.kind = kind          # "time" | "place" | "survive" | "boss" (wreck the boss in a chase)
         self.value = value        # ticks for time/survive, place for place
         self.modifier = modifier
 
     def describe(self):
         if self.kind == "boss":
-            return "TARGET: beat the boss to the line"
+            return "TARGET: wreck the boss before it gets away"
         if self.kind == "time":
             return f"TARGET: finish under {fmt_time(self.value)}"
         if self.kind == "place":
@@ -183,8 +184,8 @@ class RunState:
     def _plan_heat(self, i):
         seed = (self.seed * 31 + i * 7_919) & 0x3FFFFFFF
         # Every race is against rivals (solo clock runs live in Time Trial).
-        # Bosses only have to be beaten (finish ahead of the boss, whatever your
-        # place); the early biomes only ask for a podium.
+        # Bosses are a chase: wreck the boss before it gets away (bosses.py); the
+        # early biomes only ask for a podium.
         if is_boss(i):
             target = Target("boss")
         elif i in MODIFIER_HEATS:
@@ -223,8 +224,11 @@ class RunState:
         if h.target.modifier in ("no_coolant", "sticky"):
             mods.append(h.target.modifier)
         st = self.stats_for_heat(h)
+        # A boss chase loops one long track (its "reel"; bosses.Paver), twice a race's
+        # length, so laps repeat a layout you can learn without it feeling samey.
         g = generate(h.seed, depth=h.depth, modifiers=tuple(mods),
-                     validate_with=[self.base_vehicle_stats()])
+                     validate_with=[self.base_vehicle_stats()],
+                     length=BOSS_TRACK_LEN_K * length_for(h.depth) if h.boss else None)
         h.track = g.track
         h.track.theme = h.biome
         if h.boss:

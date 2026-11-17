@@ -62,13 +62,22 @@ def catalogue(kind):
     return items
 
 
+def upgrade_price(profile, vehicle, up_id):
+    """XP for the next level of a bike upgrade (None when maxed). 0 with the
+    testing setting "Free bike upgrades" on."""
+    from meta.bike_tune import price
+    cost = price(vehicle, up_id, profile.bike_levels(vehicle).get(up_id, 0))
+    if cost is not None and profile.settings.get("free_upgrades", False):
+        return 0
+    return cost
+
+
 def buy_upgrade(profile, vehicle, up_id):
     """Spend a bike's XP on the next level of one of its upgrades."""
-    from meta.bike_tune import price
     if vehicle not in profile.data["vehicles"]:
         return False
     levels = profile.bike_levels(vehicle)
-    cost = price(vehicle, up_id, levels.get(up_id, 0))
+    cost = upgrade_price(profile, vehicle, up_id)
     if cost is None or not profile.spend_xp(vehicle, cost):
         return False
     levels[up_id] = levels.get(up_id, 0) + 1

@@ -38,6 +38,7 @@ sys.path.insert(0, ROOT)
 
 import config as C  # noqa: E402
 import replay as rp  # noqa: E402
+from bosses import hunter_controls  # noqa: E402
 
 # What a healthy curve looks like: share of attempts that meet each run heat's
 # target, for an average player who keeps improving and picks upgrades. Early
@@ -341,7 +342,7 @@ def sim_run(seed, tier, mode, learning=False, controls="button", landings=None):
         race.bike.one_button = mode == "one"
         pilot = make_pilot(ai, mode, skill, controls)
         while not race.finished and race.time_ticks < 60 * 300:
-            ev = race.step(pilot.controls(race.bike))
+            ev = race.step(hunter_controls(race, pilot.controls(race.bike)))
             if landings is not None:
                 for e in ev or ():
                     if e[0] in LANDING_EVENTS:
