@@ -7,11 +7,16 @@ browser autoplay policy), every call quietly does nothing.
 """
 import math
 import random
+import sys
 from array import array
 
 import pygame
 
 SR = 22050
+WEB = sys.platform == "emscripten"
+# The browser mixes at 44.1/48 kHz and calls back on the page's main thread, which
+# Python-in-wasm keeps busy: a small buffer runs dry every few frames (choppy sound).
+WEB_BUFFER = 2048
 MUSIC_BASE_VOL = 0.36     # music Sound volume at 100% on the settings slider
 NOTE = {n: i for i, n in enumerate(["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"])}
 
@@ -35,13 +40,14 @@ def pre_init():
     generated in (SR mono 16-bit), so nothing is resampled in Python, and with a
     buffer that suits the platform. WSL (WSLg's PulseAudio bridge to Windows)
     stutters with small buffers, so it gets a bigger one and a PulseAudio latency
-    target. Override with HYPE_AUDIO_BUFFER (samples) / PULSE_LATENCY_MSEC."""
+    target; the browser gets WEB_BUFFER. Override with HYPE_AUDIO_BUFFER (samples) /
+    PULSE_LATENCY_MSEC."""
     import os
     wsl = _on_wsl()
     if wsl:
         os.environ.setdefault("PULSE_LATENCY_MSEC", "40")
     try:
-        buf = int(os.environ.get("HYPE_AUDIO_BUFFER", 1024 if wsl else 512))
+        buf = int(os.environ.get("HYPE_AUDIO_BUFFER", WEB_BUFFER if WEB else 1024 if wsl else 512))
     except ValueError:
         buf = 512
     try:
@@ -93,6 +99,17 @@ def noise(dur, vol=0.3, rate=8000, decay=True, sr=SR, seed=1, rate_end=None):
             acc -= 1.0
             v = r.uniform(-1, 1)
         out[i] = v * vol * ((1 - k) ** 2 if decay else 1.0)
+    return out
+
+
+def _resample(samples, k):
+    """Linear-interpolated resample: k input samples per output sample."""
+    last = len(samples) - 1
+    out = []
+    for i in range(int(len(samples) / k)):
+        p = i * k
+        j = int(p)
+        out.append(samples[j] if j >= last else samples[j] + (samples[j + 1] - samples[j]) * (p - j))
     return out
 
 
@@ -294,9 +311,9 @@ class Audio:
         try:
             if not pygame.mixer.get_init():
                 try:   # ask SDL to convert to the device format for us (no Python resampling)
-                    pygame.mixer.init(SR, -16, 1, 512, allowedchanges=0)
+                    pygame.mixer.init(SR, -16, 1, WEB_BUFFER if WEB else 512, allowedchanges=0)
                 except TypeError:
-                    pygame.mixer.init(SR, -16, 1, 512)
+                    pygame.mixer.init(SR, -16, 1, WEB_BUFFER if WEB else 512)
             freq, size, ch = pygame.mixer.get_init()
             self.sr, self.channels = freq, ch
             pygame.mixer.set_num_channels(12)
@@ -330,9 +347,8 @@ class Audio:
 
     # -- buffers ------------------------------------------------------------------
     def _sound(self, samples, vol=1.0):
-        if self.sr != SR:     # resample by nearest neighbour if the device rate differs
-            k = SR / self.sr
-            samples = [samples[min(len(samples) - 1, int(i * k))] for i in range(int(len(samples) / k))]
+        if self.sr != SR:     # the device rate differs: resample (linear, not nearest: no grit)
+            samples = _resample(samples, SR / self.sr)
         a = array("h", (max(-32767, min(32767, int(v * 32767))) for v in samples))
         if self.channels == 2:
             st = array("h", [0]) * (len(a) * 2)
@@ -463,11 +479,16 @@ class Audio:
         self.ch_zone.play(snd, loops=-1, fade_ms=90)
         self.ch_zone.set_volume(self.sfx_vol)
 
-    def stop_engine(self):
+    def stop_engine(self, hard=WEB):
+        """Silence the engine and its heat layer. In the browser it cuts at once: a
+        fade-out runs on the page's main thread, and the next scene's set-up
+        stalls it, so the browser repeats the last buffer (a stuck, screeching loop)."""
         if self.enabled:
-            for ch in self.ch_engines:
-                ch.fadeout(80)
-            self.ch_zone.fadeout(80)
+            for ch in self.ch_engines + (self.ch_zone,):
+                if hard:
+                    ch.stop()
+                else:
+                    ch.fadeout(80)
         self._engine_bucket = None
         self._zone = None
 
@@ -478,7 +499,10 @@ class Audio:
         if not self.enabled:
             return
         if name is None:
-            self.ch_music.fadeout(300)
+            if WEB:
+                self.ch_music.stop()            # see stop_engine
+            else:
+                self.ch_music.fadeout(300)
             self._music_playing = False
 
     def tick(self):
@@ -512,9 +536,12 @@ class Audio:
         n_out = int(len(samples) / k)
         out = array("h", [0]) * (n_out * self.channels)
         chunk = 6000
+        last = len(samples) - 1
         for start in range(0, n_out, chunk):
             for i in range(start, min(n_out, start + chunk)):
-                v = samples[min(len(samples) - 1, int(i * k))]
+                p = i * k
+                j = int(p)
+                v = samples[j] if j >= last else samples[j] + (samples[j + 1] - samples[j]) * (p - j)
                 v = max(-32767, min(32767, int(v * 32767)))
                 if self.channels == 2:
                     out[2 * i] = v

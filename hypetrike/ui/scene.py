@@ -67,6 +67,7 @@ class RaceScene(Scene):
         self.renderer.heat_pads = self.race.bike.one_button   # pads draw as heat pads
         self.popups = hud.Popups()
         self.paused = False
+        self._muted = False                 # engine silenced for the pause menu
         self.ticks = 0
         self.finish_hold = 0
         self.result = None
@@ -123,7 +124,11 @@ class RaceScene(Scene):
     def _tick(self):
         if self.paused:
             self.app.input.consume_edges()
+            if not self._muted:                  # no engine droning on under the pause menu
+                self.app.audio.stop_engine()
+                self._muted = True
             return
+        self._muted = False
         self.ticks += 1
         if self.replay is not None:
             ctl = self._replay_next()

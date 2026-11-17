@@ -28,6 +28,22 @@ def _web_aspect():
         return 16 / 9, False
 
 
+WEB_MAX_SCALE = 2       # canvas = logical x this (bigger costs too much per frame in wasm)
+
+
+def _web_scale():
+    """Whole-number canvas scale for the browser: the page's height in device pixels
+    over the logical height, 1..WEB_MAX_SCALE. The browser stretches the canvas to
+    the page, so a bigger canvas means crisp text and even pixels instead of a 3x
+    bilinear smear of the 640x360 picture."""
+    try:
+        import platform as _p
+        h = float(_p.window.innerHeight) * float(_p.window.devicePixelRatio or 1)
+    except Exception:
+        return 1
+    return max(1, min(WEB_MAX_SCALE, int(h // C.VIEW_H)))
+
+
 class View:
     """Logical canvas (width x 360) and its mapping to the real window."""
 
@@ -37,7 +53,8 @@ class View:
         if WEB:
             aspect, self.portrait = _web_aspect()
             self.width = self._width_for(aspect)
-            self.window = pygame.display.set_mode((self.width, self.height))
+            self.web_k = _web_scale()
+            self.window = pygame.display.set_mode((self.width * self.web_k, self.height * self.web_k))
         else:
             size = (1280, 720)
             if os.environ.get("HYPE_WINDOW"):
@@ -46,9 +63,9 @@ class View:
             self.width = self._width_for(size[0] / size[1])
         self.surface = pygame.Surface((self.width, self.height))
         self.smooth = False
-        # crisp text at window resolution (not in the browser or headless runs)
-        self.hires_text = (not WEB and os.environ.get("SDL_VIDEODRIVER") != "dummy"
-                           and not os.environ.get("HYPE_LOWRES_TEXT"))
+        # crisp text at window resolution (not in headless runs, or a browser canvas at 1x)
+        self.hires_text = (os.environ.get("SDL_VIDEODRIVER") != "dummy" and not os.environ.get("HYPE_LOWRES_TEXT")
+                           and (not WEB or self.web_k > 1))
         self._hires_fonts = {}
         self._sync_text_canvas()
 
@@ -66,8 +83,13 @@ class View:
         if WEB:
             aspect, self.portrait = _web_aspect()
             self.width = self._width_for(aspect)
-            if self.width != old:
-                self.window = pygame.display.set_mode((self.width, self.height))
+            k = _web_scale()
+            if self.width != old or k != self.web_k:
+                self.web_k = k
+                self.window = pygame.display.set_mode((self.width * k, self.height * k))
+                if (k > 1) != self.hires_text:
+                    self.hires_text = k > 1
+                    self._sync_text_canvas()
         else:
             size = size or self.window.get_size()
             self.width = self._width_for(size[0] / max(1, size[1]))
@@ -84,8 +106,6 @@ class View:
         return pygame.Rect((ww - w) // 2, (wh - h) // 2, w, h)
 
     def to_logical(self, pos):
-        if WEB:
-            return pos
         r = self._dest_rect()
         return ((pos[0] - r.x) * self.width / max(1, r.w),
                 (pos[1] - r.y) * self.height / max(1, r.h))
@@ -113,19 +133,18 @@ class View:
         return cache[1]
 
     def present(self):
-        if WEB:
-            if self.window is not self.surface:
-                self.window.blit(self.surface, (0, 0))
-        else:
-            r = self._dest_rect()
+        """Scale the logical canvas to the window (in the browser too: its canvas is
+        a whole-number multiple, so the sharp scale is a plain pixel double)."""
+        r = self._dest_rect()
+        if r.size != self.window.get_size():
             self.window.fill((0, 0, 0))
-            if r.size == self.surface.get_size():
-                self.window.blit(self.surface, r)
-            elif self.smooth:
-                self.window.blit(pygame.transform.smoothscale(self.surface, r.size), r)
-            else:
-                self.window.blit(self._sharp_scale(r.size), r)
-            self._draw_hires_text(r)
+        if r.size == self.surface.get_size():
+            self.window.blit(self.surface, r)
+        elif self.smooth:
+            self.window.blit(pygame.transform.smoothscale(self.surface, r.size), r)
+        else:
+            self.window.blit(self._sharp_scale(r.size), r)
+        self._draw_hires_text(r)
         pygame.display.flip()
 
     def _draw_hires_text(self, r):

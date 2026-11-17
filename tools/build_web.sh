@@ -18,4 +18,10 @@ fi
 if ! grep -q 'contextmenu' "$W/index.html"; then
   sed -i '0,/<head>/s//<head>\n<script>document.addEventListener("contextmenu", e => e.preventDefault());<\/script>/' "$W/index.html"
 fi
+# Leaving the page (browser Back, tab switch, phone lock) freezes the Python loop, and
+# the browser then repeats its last audio buffer: a stuck screech. Suspend the audio
+# while the page is hidden and resume it on return.
+if ! grep -q 'hype-audio-guard' "$W/index.html"; then
+  sed -i '0,/<head>/s//<head>\n<script id="hype-audio-guard">(() => {\n  const ctx = () => (window.Module \&\& Module.SDL2 \&\& Module.SDL2.audioContext) || null;\n  const set = (on) => { const a = ctx(); if (a) (on ? a.resume() : a.suspend()).catch(() => {}); };\n  document.addEventListener("visibilitychange", () => set(!document.hidden));\n  window.addEventListener("pagehide", () => set(false));\n  window.addEventListener("pageshow", () => set(!document.hidden));\n})();<\/script>/' "$W/index.html"
+fi
 echo "Built: $(pwd)/hypetrike/build/web"

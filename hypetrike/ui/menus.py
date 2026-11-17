@@ -134,7 +134,7 @@ class TitleScene(BackdropScene):
 
     def build_menu(self):
         items = []
-        items.append(dict(label="NEW RUN", sub="6 races vs rivals - one life", action=self.new_run))
+        items.append(dict(label="NEW RUN", sub="5 biomes, 15 races - 3 lives", action=self.new_run))
         items.append(dict(label="TIME TRIAL", sub="Solo vs the clock - beat par", action=self.time_trial))
         items.append(dict(label="PRACTICE", sub="Valley Loop - solo, best lap", action=self.practice))
         items.append(dict(label="QUICK RACE", sub="New generated track vs 3 rivals", action=self.quick_race))
