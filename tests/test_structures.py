@@ -212,7 +212,8 @@ WEAK_SETUPS = {
     "valley": lambda r, ch, b, t: (setattr(ch, "window_from", t - 60), setattr(ch, "window_until", t + 60),
                                    setattr(b, "lane", ch.lantern), setattr(b, "lane_pos", float(ch.lantern))),
     "desert": lambda r, ch, b, t: (setattr(b, "airborne", True), setattr(b, "h", b.h + 30)),
-    "night": lambda r, ch, b, t: (setattr(b, "lane", ch.lantern), setattr(b, "lane_pos", float(ch.lantern))),
+    "night": lambda r, ch, b, t: (setattr(ch, "window_from", t - 60), setattr(ch, "window_until", t + 60),
+                                  setattr(b, "lane", ch.lantern), setattr(b, "lane_pos", float(ch.lantern))),
     "stadium": lambda r, ch, b, t: setattr(ch, "spot_until", t + 10),
     "lava": lambda r, ch, b, t: (setattr(b, "_one_button", True), setattr(b, "temp", C.ONE_OVERHEAT_AT + 1)),
 }
@@ -223,8 +224,6 @@ def test_ramming_the_rig_without_its_weak_point_bonks_you():
     for biome in BOSSES:
         race = _boss_race(biome)
         ch = race.chase
-        if biome == "night":
-            race.bike.lane = race.bike.lane_pos = (ch.lantern + 1) % C.LANES
         out = _ram(race)
         b = race.bike
         assert any(e[:2] == ("boss", "bonk") and e[2].startswith(ch.weak) for e in out) and ch.hp == 3, biome
@@ -305,14 +304,15 @@ def test_the_boss_lays_its_own_pieces_when_you_are_close():
     pv.want_helper = True
     pv.lay_until((start + 12) * C.TILE_W, True)
     assert RAMP_L in race.track.terrain[start:pv.built] and pv.helper_end is not None
-    race = _boss_race("night")
+    race = _boss_race("night")                                      # the Phantom: a clear straight for the dark
     pv = race.chase.paver
-    pv.lantern, start = 2, pv.built
+    start = pv.built
     pv.want_helper = True
-    pv.lay_until((start + 12) * C.TILE_W, True)
-    row = start + (pv.helper_end - start) - 6                       # the corridor's barrier column
-    lanes = [race.track.surface[l][row] for l in range(C.LANES)]
-    assert lanes[2] != DEBRIS and lanes.count(DEBRIS) == 3          # every lane but the lantern's
+    pv.lay_until((start + 14) * C.TILE_W, True)
+    from track.tiles import NONE, FLAT
+    cols = range(pv.helper_start, pv.helper_end)
+    assert all(race.track.terrain[c] == FLAT for c in cols)
+    assert all(race.track.surface[l][c] == NONE for l in range(C.LANES) for c in cols)
     race = _boss_race("valley")                                     # the Baron: mud, but not the hatch lane
     pv = race.chase.paver
     pv.lantern, start = 1, pv.built
@@ -334,6 +334,58 @@ def test_hatch_needs_its_lane_and_the_shield_up():
     assert ch.weak_open(race.bike, t)                              # lifted, right lane
     _place(race, ch.x - 4, wrong)
     assert not ch.weak_open(race.bike, t)                          # lifted, wrong lane
+
+
+def test_phantom_lanterns_are_decoys_until_the_lights_die():
+    race = _boss_race("night")
+    ch = race.chase
+    t = race.time_ticks
+    _place(race, ch.x - 4, ch.lantern)
+    assert not ch.weak_open(race.bike, t) and ch.dark(t) == 0       # lights on: every lantern's a decoy
+    out = []
+    ch._contact(race, t, out)
+    assert ("boss", "bonk", "soul_shut") in out
+    ch.window_from, ch.window_until = t - 60, t + 60                # dark
+    assert ch.dark(t) == 1.0
+    assert ch.weak_open(race.bike, t)
+    _place(race, ch.x - 4, (ch.lantern + 1) % C.LANES)
+    assert not ch.weak_open(race.bike, t)                          # dark, wrong lane
+    ch.window_from = t - 10                                         # still flickering: not yet
+    _place(race, ch.x - 4, ch.lantern)
+    assert ch.shield(t) == "warn" and not ch.weak_open(race.bike, t)
+
+
+def test_phantom_soul_hops_once_mid_dark_after_the_first_hit():
+    from bosses import DOUSE_WARN, WINDOW_TICKS
+    race = _boss_race("night")
+    ch = race.chase
+    pv = ch.paver
+    for hp, hops in ((3, 0), (2, 1)):
+        ch.hp = hp
+        t = race.time_ticks
+        ch.engaged = True
+        pv.helper_end, pv.helper_start = 10 ** 6, int(ch.x // C.TILE_W) - 2
+        out = []
+        ch._windows(t, out)
+        assert ("boss", "douse") in out and ch.in_window(t)
+        seen, lanes = 0, {ch.lantern}
+        for k in range(1, DOUSE_WARN + WINDOW_TICKS):
+            ev = []
+            ch._soul(t + k, ev)
+            seen += ev.count(("boss", "soul_hop"))
+            lanes.add(ch.lantern)
+        assert seen == hops and len(lanes) == 1 + hops, hp
+        ch.window_until = 0
+
+
+def test_wisps_chill_you():
+    from bosses import Hazard, WISP_KEEP
+    race = _boss_race("night")
+    b = _place(race, 900, 1); b.one_button = True; b.temp = 10.0
+    race.chase.hazards = [Hazard("wisp", b.x, 1, race.time_ticks - 60, 45, 100)]
+    out = []
+    race.chase._attacks(race, race.time_ticks, out)
+    assert ("boss", "chilled") in out and b.temp < 10.0 - C.HEAT_BAR and b.speed < 40 * WISP_KEEP + 0.01
 
 
 def test_the_boss_holds_back_while_you_recover_from_a_crash():
@@ -360,7 +412,7 @@ def test_every_boss_uses_its_attack():
             if ch.gap(b) > 3 * C.TILE_W or ch.gap(b) < C.TILE_W:     # stay close behind it
                 _place(race, ch.x - 2 * C.TILE_W, b.lane)
             fired |= {e[1] for e in race.step(Controls(a=True)) if e[0] == "boss"}
-        expect = {"valley": "bomb", "desert": "devil", "night": "blackout", "stadium": "pyro",
+        expect = {"valley": "bomb", "desert": "devil", "night": "wisp", "stadium": "pyro",
                   "lava": "eruption"}[biome]
         assert expect in fired and "minion" in fired, (biome, fired)
 
@@ -532,3 +584,16 @@ def test_landing_on_a_kink_can_match_either_side():
     b.x = x
     assert abs(b._landing_slope(x, 0.0)) < 1.0                  # flat-angled: judged against the flat
     assert b._landing_slope(x, -24.0) < -20.0                   # slope-angled: judged against the slope
+
+
+def test_every_pit_has_a_ramp_to_jump_it():
+    """A pit needs a kicker right before it (or a big ramp one column back): with
+    flat in front, a fast bike skims over it and a slow one can only fall in."""
+    from bosses import pieces, BOSSES
+    terrains = [s.terrain for s in LIBRARY]
+    for biome in BOSSES:
+        terrains += [p.terrain for kind in ("helper", "obstacle") for p in pieces(biome)[kind]]
+    for t in terrains:
+        for i, ch in enumerate(t):
+            if ch == "g" and t[i - 1] != "g":
+                assert t[i - 1] == "s" or "L" in t[max(0, i - 2):i], t

@@ -242,15 +242,7 @@ def _live(s, biome, t, look, spin):
             _wheel(s, x, FRONT - 12, 11, spin, tyre=(24, 20, 30), hub=(120, 100, 150))
         pygame.draw.line(s, (120, 100, 150), (PX + 20 + math.cos(spin) * 5, FRONT - 12 + math.sin(spin) * 5),
                          (PX + 180 + math.cos(spin) * 5, FRONT - 12 + math.sin(spin) * 5), 3)    # coupling rod
-        for lane in range(C.LANES):                                     # a lantern per lane on its tail
-            y = lane_gy(lane) - 18
-            lit = lane == look.lantern
-            nxt = lane == look.lantern_next and (t // 6) % 2 == 0
-            if lit:
-                pygame.draw.circle(s, (*glow, 70), (PX - 6, y), 16)
-            col = (240, 225, 255) if lit else ((190, 140, 255) if nxt else (60, 50, 80))
-            pygame.draw.rect(s, (30, 26, 40), (PX - 12, y - 7, 12, 14), border_radius=2)
-            pygame.draw.rect(s, col, (PX - 10, y - 5, 8, 10), border_radius=2)
+        _lanterns(s, t, look, glow)
     elif biome == "stadium":
         for x in range(PX + 20, PX + RIG_LEN, 44):
             _wheel(s, x, FRONT - 6, 8, spin, spokes=2)
@@ -303,6 +295,48 @@ def _hatches(s, t, look, glow, pulse):
             pygame.draw.rect(s, col, (slot.x - 2, slot.y - 2 - lift, slot.w + 4, slot.h + 4), border_radius=2)
             pygame.draw.line(s, (90, 90, 100), (slot.x, slot.centery - lift), (slot.right, slot.centery - lift), 2)
             pygame.draw.circle(s, (60, 60, 70), (slot.centerx, slot.centery - lift), 3)       # the lock
+
+
+def _lanterns(s, t, look, glow):
+    """Ghost Train: a lantern per lane on its tail, all burning alike (decoys) in the
+    light. While its lights flicker they all gutter; once it's dark only the soul
+    lantern is still lit (its glow is drawn again over the dark: soul_glow)."""
+    dark = look.weak == "soul" and look.shield == "open"
+    flicker = look.weak == "soul" and look.shield == "warn"
+    for lane in range(C.LANES):
+        y = lane_gy(lane) - 18
+        if dark:
+            lit = False                                             # soul_glow draws the one left burning
+        elif flicker:
+            lit = (t // 4 + lane * 3) % 5 != 0
+        else:
+            lit = True
+        if lit:
+            pygame.draw.circle(s, (*glow, 60), (PX - 6, y), 15)
+        pygame.draw.rect(s, (30, 26, 40), (PX - 12, y - 7, 12, 14), border_radius=2)
+        pygame.draw.rect(s, (240, 225, 255) if lit else (40, 34, 56), (PX - 10, y - 5, 8, 10), border_radius=2)
+
+
+def soul_glow(surf, sx_rear, t, look):
+    """Drawn over the Phantom's darkness: the soul lantern still burning (with the
+    green hit ring), and its next lane blinking before it hops."""
+    if look.weak != "soul" or look.shield != "open" or look.wrecked:
+        return
+    pulse = 0.6 + 0.4 * (1 + math.sin(t * 0.25)) / 2
+    for lane, main in ((look.lantern, True), (look.lantern_next, False)):
+        if lane is None or (not main and (t // 5) % 2):
+            continue
+        x, y = int(sx_rear - 6), int(Y0 + lane_gy(lane) - 18)
+        halo = pygame.Surface((80, 80), pygame.SRCALPHA)
+        pygame.draw.circle(halo, (200, 170, 255, int(70 * pulse) if main else 40), (40, 40), 34)
+        pygame.draw.circle(halo, (235, 220, 255, int(110 * pulse) if main else 60), (40, 40), 18)
+        surf.blit(halo, (x - 40, y - 40))
+        pygame.draw.rect(surf, (30, 26, 40), (x - 6, y - 7, 12, 14), border_radius=2)
+        pygame.draw.rect(surf, (250, 245, 255) if main else (190, 140, 255), (x - 4, y - 5, 8, 10),
+                         border_radius=2)
+        if main:
+            ring = 12 + int(3 * pulse)
+            pygame.draw.rect(surf, HIT, (x - ring, y - ring, 2 * ring, 2 * ring), 3, border_radius=4)
 
 
 def _roof_zone(s, t, look, glow, pulse):

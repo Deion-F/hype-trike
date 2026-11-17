@@ -599,7 +599,7 @@ class WorldRenderer:
                 pygame.draw.polygon(surf, (230, 60, 20), [(sx - 5 * sz, y), (sx, y - h), (sx + 5 * sz, y)])
                 pygame.draw.polygon(surf, (255, 190, 50), [(sx - 2, y), (sx, y - h * 0.55), (sx + 2, y)])
 
-    HAZARD_COL = {"mud": (150, 110, 60), "devil": (236, 206, 140), "pyro": (255, 120, 40), "lava": (255, 80, 20)}
+    HAZARD_COL = {"mud": (150, 110, 60), "devil": (236, 206, 140), "wisp": (200, 230, 255), "pyro": (255, 120, 40), "lava": (255, 80, 20)}
 
     def _draw_hazard(self, surf, race, hz, cam_x, t, now):
         sx = C.BIKE_SCREEN_X + (hz.x - cam_x)
@@ -626,6 +626,16 @@ class WorldRenderer:
                 w = 4 + k * 3
                 pygame.draw.ellipse(surf, (226, 196, 140) if k % 2 else (190, 160, 110),
                                     (sx - w + math.sin(a) * 3, y - 6 - k * 6, 2 * w, 5), 2)
+        elif hz.kind == "wisp" and not hz.used:                     # a ghost light, bobbing, with a tail
+            age = now - hz.start - hz.warn
+            rise = min(1.0, age / 12)
+            for k in range(4):
+                a = t * 0.2 + k * 1.6
+                wx, wy = sx + math.sin(a) * 4 + k * 5, y - 10 - 18 * rise + math.cos(a) * 3 + k * 3
+                r = max(2, 9 - 2 * k)
+                pygame.draw.circle(surf, (150, 200, 255) if k else (235, 245, 255), (int(wx), int(wy)), r)
+            pygame.draw.circle(surf, (40, 50, 90), (int(sx - 3), int(y - 12 - 18 * rise)), 2)   # eyes
+            pygame.draw.circle(surf, (40, 50, 90), (int(sx + 3), int(y - 12 - 18 * rise)), 2)
         elif hz.kind == "pyro" and not hz.used:
             h = 30 + 10 * ((t * 7) % 3)
             pygame.draw.polygon(surf, (240, 60, 20), [(sx - 8, y), (sx, y - h), (sx + 8, y)])

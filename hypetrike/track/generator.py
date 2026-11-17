@@ -103,7 +103,7 @@ LIBRARY = [
             hazards=((4, DEBRIS, 1, 2), (6, MUD, 1, 2)), complex=True),
     Segment("fin gauntlet", ".ff.....f.....ff......", 4, runway=3, heat_discount=7, min_depth=2, weight=0.7,
             complex=True),
-    Segment("mesa canyon", "..utttd.g.....", 4, runway=4, heat_discount=5, min_depth=3, weight=0.7,
+    Segment("mesa canyon", "..utttd.sg.....", 4, runway=4, heat_discount=5, min_depth=3, weight=0.7,
             complex=True),
     Segment("summit", "..utUTTDtkd...f....", 5, runway=3, heat_discount=8, min_depth=3, weight=0.7,
             hazards=((5, MUD, 1, 2),), complex=True),

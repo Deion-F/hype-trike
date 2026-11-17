@@ -17,7 +17,9 @@ a short window, so a good approach lands the hit.
 Weak points (BOSSES[...]["weak"]), each testing a skill the run has taught:
   hatch      Mud Baron     ram the hatch in its lane while the shield is lifted (lane + timing)
   roof       Dune Raider   ram it high in the air, above the line (it lays big ramps)
-  lantern    Phantom       ram it in the lane its lantern lights (lane choice)
+  soul       Phantom       every lane's lantern burns alike (decoys) until it douses its lights;
+                           ram the one still burning in the dark (timing + lane in the dark;
+                           after the first hit it hops lanes once mid-dark)
   spotlight  Showstopper   land a PERFECT, then ram it while the spotlight's on you
   core       Inferno       ram it while overheating (heat)
 Ramming it anywhere else bonks you back with a speed loss. A hit makes it surge
@@ -58,11 +60,11 @@ BOSSES = {
                ("Attack", "Dust Devil: a whirlwind hops lanes and shoves you aside")]),
     "night": dict(
         pace=0.985,
-        name="PHANTOM", rig="Ghost Train", weak="lantern", trail="oil", boost="plasma", glow=(170, 90, 255),
-        body=(40, 34, 62), dark=(20, 16, 32), trim=(170, 90, 255), attack="blackout",
-        intro=[("Weak point", "the lit lantern on its tail: ram it in that lane"),
-               ("Lays", "split bridges, broken spans and barriers"),
-               ("Attack", "Blackout: the lights die for 2 s (it flickers first)")]),
+        name="PHANTOM", rig="Ghost Train", weak="soul", trail="oil", boost="plasma", glow=(170, 90, 255),
+        body=(40, 34, 62), dark=(20, 16, 32), trim=(170, 90, 255), attack="wisp",
+        intro=[("Weak point", "its lanterns are decoys until it douses the lights: ram the one still burning"),
+               ("Lays", "split bridges, broken spans and a dark straight before each lights-out"),
+               ("Attack", "Wisps: ghost lights rise in your lane and the next; touch one and you go cold")]),
     "stadium": dict(
         pace=0.98,
         name="SHOWSTOPPER", rig="Parade Float", weak="spotlight", trail="smoke", boost="neon",
@@ -108,8 +110,9 @@ WINDOW_K = 0.4                  # ... at this share of its cruising speed
 SHIELD_WARN = 40                # hatch shield: first ticks of a window it only flashes
 RECOVER_TICKS = 180             # you crashed / stalled: it holds back until this long after you ride again ...
 RECOVER_K = 0.55                # ... at this share of its cruising speed (once it's off screen)
-LANTERN_EVERY = 170             # lantern: ticks between lane changes ...
-LANTERN_WARN = 40               # ... the next lane blinks this long first
+DOUSE_WARN = 45                 # soul: its lights flicker this long before they die (window's first ticks)
+SOUL_HOP_HP = 2                 # ... from this many hits left, the soul hops lanes once mid-dark ...
+SOUL_HOP_WARN = 30              # ... and its next lane blinks this long first
 SPOT_TICKS = 240                # spotlight lasts this long after a PERFECT
 ROOF_MIN = 14                   # roof: at least this high above the ground when you hit
 CONTACT = 14                    # px behind its rear where you touch it
@@ -117,7 +120,7 @@ BONK_PUSH, BONK_KEEP = 26, 0.7  # a bonk throws you back this far, keeping this 
 FLEE_GAP = 7 * TILE             # ... and it floors it like at the start until it's this far ahead
 FLEE_MAX = 240                  # ... (at most this long), giving you time to build speed again
 HIT_PUSH = 40
-ATTACK_EVERY = {"mud": 300, "devil": 360, "blackout": 600, "pyro": 420, "lava": 400}
+ATTACK_EVERY = {"mud": 300, "devil": 360, "wisp": 360, "pyro": 420, "lava": 400}
 
 # -- minions --------------------------------------------------------------------------
 MINION_EVERY = 420              # ticks between drops (+/- 90)
@@ -131,8 +134,8 @@ TRAIL_LIFE = 150                # (default trail point life)
 TRAIL_REACH = 12                # px either side of a point that counts as "in it"
 TRAIL_HEAT = {"fire": 0.32, "smoke": -0.3}      # heat per tick in the trail (x strength)
 TRAIL_DRAG_EVERY = 6                            # classic smoke: -1 speed this often
-BLACKOUT_FLICKER = 45                           # ticks of warning flicker before the dark
-BLACKOUT_DARK = 120                             # ticks of darkness
+WISP_CHILL = 2.5                                # wisp: heat bars it takes ...
+WISP_KEEP = 0.85                                # ... and the speed you keep
 
 PAD = 12                        # flat columns kept beyond the laid track
 
@@ -175,13 +178,13 @@ class BossTrail:
 
 class Hazard:
     """A boss attack on the track: warns first, then is live in one lane.
-    kind: mud | devil (hops across lanes) | pyro | lava."""
+    kind: mud | devil (hops across lanes) | wisp | pyro | lava."""
 
     def __init__(self, kind, x, lane, start, warn, life, rng=None):
         self.kind, self.x, self.lane = kind, x, lane
         self.start, self.warn, self.life = start, warn, life
         self.dir = 1 if (rng and rng.random() < 0.5) else -1
-        self.used = False          # one-shot hazards (devil, pyro, lava) hit once
+        self.used = False          # one-shot hazards (devil, wisp, pyro, lava) hit once
 
     def live(self, t):
         return self.start + self.warn <= t < self.start + self.warn + self.life
@@ -233,7 +236,7 @@ def _pieces():
                       P("......", ((2, DEBRIS, 1, 2), (4, DEBRIS, 1, 2)), material=SAND),
                       P("..L.gg.....", runway=4)]),
         "night": dict(
-            helper=[P("........", corridor=True)],     # barriers in every lane but the lantern's
+            helper=[P("..........")],                   # a clear straight to ride in the dark
             obstacle=[P("..obbbbbbe....", runway=3),
                       P("..oryyyZynbe....", runway=3),
                       P("..obbbbbKxbbbe....", runway=4),
@@ -247,7 +250,7 @@ def _pieces():
         "lava": dict(
             helper=[P(".........", ((1, WATER, 1, 2), (3, WATER, 2, 3), (5, PAD_L, 1, 2), (6, PAD_S, 1, 2)))],
             obstacle=[P("..Lgg.....", runway=4),
-                      P("..utttd.g.....", runway=4),
+                      P("..utttd.sg.....", runway=4),
                       P("......", ((1, DEBRIS, 1, 2), (3, WATER, 1, 2))),
                       P("..s...s...", ((2, WATER, 1, 2),))]),
     }
@@ -282,7 +285,7 @@ class Paver:
         self.helper_end = None                  # live column just after the last helper laid ...
         self.helper_start = None                # ... and its first column
         self._last_rc = self.OPENING - 1        # reel column of the last column laid from the loop
-        self.lantern = None                     # night corridor: the lane it keeps clear
+        self.lantern = None                     # Mud Baron's corridor: the hatch lane it keeps clear
         self._last_obstacle = None
         self.reel_hoops = {}
         for hx, hh, hl in reel.hoops:
@@ -332,7 +335,7 @@ class Paver:
             self._from_reel()
 
     def _themed(self, piece):
-        from track.tiles import NONE, DIRT, DEBRIS, MUD, PAD_S, PADS
+        from track.tiles import NONE, DIRT, MUD, PAD_S, PADS
         if piece.runway > self.runway:
             self._push([("." , [NONE] * C.LANES, DIRT)] * (piece.runway - self.runway))
         cols = []
@@ -343,12 +346,9 @@ class Paver:
             for lane in self.rng.sample(range(C.LANES), k):
                 cols[off][1][lane] = kind
         if piece.corridor and self.lantern is not None:
-            block = MUD if self.biome == "valley" else DEBRIS
             for lane in range(C.LANES):
                 if lane != self.lantern:
-                    cols[2][1][lane] = block
-                    if block == MUD:
-                        cols[3][1][lane] = MUD
+                    cols[2][1][lane] = cols[3][1][lane] = MUD
             cols[5][1][self.lantern] = PAD_S
         self._push([(c, s, m) for c, s, m in cols])
         self._runway_after(cols, lambda c: c[0] == "." and not any(x not in (NONE,) + PADS for x in c[1]))
@@ -442,15 +442,14 @@ class BossChase:
         self.next_minion = INTRO_TICKS + 120 + self.rng.randint(0, 90)
         self.next_attack = INTRO_TICKS + 300
         self.lantern = self.rng.randrange(C.LANES)
-        self.lantern_next = None
-        self.lantern_at = LANTERN_EVERY
+        self.lantern_next = None                # soul: the lane it's about to hop to (blinks)
+        self.hop_at = None                      # ... and when
         self.spot_until = 0
         self.flash_at = -99                     # last hit (renderer flash)
         self.bonk_at = -99
         self._warned = False
         self.lap = 1                            # laps of the looped track you're on
         self.hazards = []                       # live attacks (Hazard)
-        self.blackout = (0, 0)
         self.paver = Paver(reel, race.track, biome, self.rng)
         self.paver.lay_until(self.front - TILE, False)
 
@@ -459,10 +458,15 @@ class BossChase:
         return self.x + RIG_LEN
 
     # -- what the renderer / HUD read -------------------------------------------------------
+    def window_warn(self):
+        """Ticks at the start of a window before the weak point opens."""
+        return {"hatch": SHIELD_WARN, "soul": DOUSE_WARN}.get(self.weak, 0)
+
     def shield(self, t):
-        """Hatch shield: "closed", "warn" (about to lift) or "open"."""
+        """Hatch shield / Phantom's lights: "closed", "warn" (about to lift / flickering)
+        or "open" (lifted / dark)."""
         if self.window_from <= t < self.window_until:
-            return "warn" if t < self.window_from + SHIELD_WARN else "open"
+            return "warn" if t < self.window_from + self.window_warn() else "open"
         return "closed"
 
     def in_window(self, t):
@@ -475,23 +479,22 @@ class BossChase:
         return self.x - bike.x
 
     def dark(self, t):
-        """0 (normal) .. 1 (blackout) for the screen, with a flicker warning first."""
-        start, until = self.blackout
-        if not start <= t < until:
+        """0 (normal) .. 1 (lights out) for the screen: the Phantom douses its lights
+        for each braking window, flickering first."""
+        if self.weak != "soul" or self.outcome is not None:
             return 0.0
-        if t < start + BLACKOUT_FLICKER:
-            return 0.85 if (t - start) // 6 % 2 else 0.0
-        return 1.0
+        state = self.shield(t)
+        if state == "warn":
+            return 0.85 if (t - self.window_from) // 6 % 2 else 0.0
+        return 1.0 if state == "open" else 0.0
 
     def weak_open(self, bike, t):
         """Would ramming the rig right now hit its weak point?"""
         w = self.weak
         if w == "roof":
             return bike.airborne and bike.h - bike.track.ground(bike.x, bike.lane_index) >= ROOF_MIN
-        if w == "hatch":
+        if w in ("hatch", "soul"):
             return bike.lane_index == self.lantern and self.shield(t) == "open"
-        if w == "lantern":
-            return bike.lane_index == self.lantern
         if w == "spotlight":
             return self.spotlit(t)
         return bike.heat_zone() == 3 if bike.one_button else bike.temp >= C.RED_AT
@@ -532,7 +535,7 @@ class BossChase:
         self.paver.lay_until(self.front - TILE, self.engaged)     # only ever under its body
         if self.outcome is None:
             self._windows(t, out)
-            self._lantern(t, out)
+            self._soul(t, out)
             self._contact(race, t, out)
             self._minions(race, t, out)
             self._attacks(race, t, out)
@@ -599,24 +602,31 @@ class BossChase:
         if pv.helper_end is not None and self.x >= (pv.helper_start + 1) * TILE:
             pv.helper_end = None
             if self.engaged:
-                self.window_from, self.window_until = t, t + WINDOW_TICKS + (SHIELD_WARN if self.weak == "hatch" else 0)
-                out.append(("boss", "window"))
+                self.window_from, self.window_until = t, t + WINDOW_TICKS + self.window_warn()
+                if self.weak == "soul":                   # lights out: a new soul lantern, hidden till now
+                    self.lantern = self.rng.choice([l for l in range(C.LANES) if l != self.lantern])
+                    self.lantern_next = None
+                    hop = self.hp <= SOUL_HOP_HP
+                    self.hop_at = t + DOUSE_WARN + WINDOW_TICKS // 2 if hop else None
+                    out.append(("boss", "douse"))
+                else:
+                    out.append(("boss", "window"))
             self.next_window = t + WINDOW_EVERY
 
-    def _lantern(self, t, out):
-        if self.weak != "lantern":
+    def _soul(self, t, out):
+        """Phantom: from SOUL_HOP_HP hits left, the soul hops lanes once mid-dark,
+        its next lane blinking first."""
+        if self.hop_at is None:
             return
-        frozen = self.paver.want_helper or self.paver.helper_end is not None or self.in_window(t)
-        if frozen:
-            self.lantern_next = None
-            self.lantern_at = max(self.lantern_at, t + LANTERN_WARN)
+        if not self.in_window(t):
+            self.hop_at, self.lantern_next = None, None
             return
-        if self.lantern_next is None and t >= self.lantern_at - LANTERN_WARN:
-            self.lantern_next = self.rng.choice([l for l in range(C.LANES) if l != self.lantern])
-        if t >= self.lantern_at and self.lantern_next is not None:
-            self.lantern, self.lantern_next = self.lantern_next, None
-            self.lantern_at = t + LANTERN_EVERY
-            out.append(("boss", "lantern"))
+        if self.lantern_next is None and t >= self.hop_at - SOUL_HOP_WARN:
+            near = [l for l in (self.lantern - 1, self.lantern + 1) if 0 <= l < C.LANES]
+            self.lantern_next = self.rng.choice(near)
+        if t >= self.hop_at and self.lantern_next is not None:
+            self.lantern, self.lantern_next, self.hop_at = self.lantern_next, None, None
+            out.append(("boss", "soul_hop"))
 
     def _contact(self, race, t, out):
         b = race.bike
@@ -655,6 +665,8 @@ class BossChase:
             hint = self.weak
             if hint == "hatch":
                 hint = "hatch_lane" if b.lane_index != self.lantern else "hatch_shut"
+            elif hint == "soul":                        # lights on: decoys; dark: wrong lane
+                hint = "soul_lane" if self.shield(t) == "open" else "soul_shut"
             out.append(("boss", "bonk", hint))
         self.bonk_at = t
         # It roars off out of sight, like at the start: chase it down again.
@@ -701,9 +713,11 @@ class BossChase:
             elif kind == "devil":
                 self.hazards.append(Hazard("devil", b.x + 4 * TILE, r.randrange(C.LANES), t, 30, 240, r))
                 out.append(("boss", "devil"))
-            elif kind == "blackout":
-                self.blackout = (t, t + BLACKOUT_FLICKER + BLACKOUT_DARK)
-                out.append(("boss", "blackout"))
+            elif kind == "wisp":                      # your lane and one beside it
+                near = [l for l in (b.lane_index - 1, b.lane_index + 1) if 0 <= l < C.LANES]
+                for lane in sorted({b.lane_index, r.choice(near)}):
+                    self.hazards.append(Hazard("wisp", b.x + 4.5 * TILE, lane, t, 45, 120))
+                out.append(("boss", "wisp"))
             elif kind == "pyro":
                 lanes = {b.lane_index if r.random() < 0.6 else r.randrange(C.LANES), r.randrange(C.LANES)}
                 for lane in sorted(lanes):
@@ -715,7 +729,7 @@ class BossChase:
             self.next_attack = t + ATTACK_EVERY[kind] + r.randint(-60, 60)
         for hz in self.hazards:
             hz.step(t)
-            if hz.live(t) and not hz.used and hz.touches(b, low_air=30 if hz.kind == "pyro" else 0):
+            if hz.live(t) and not hz.used and hz.touches(b, low_air=30 if hz.kind in ("pyro", "wisp") else 0):
                 out += self._hazard_hit(hz, b, out)
         self.hazards = [hz for hz in self.hazards if not hz.done(t)]
 
@@ -730,6 +744,11 @@ class BossChase:
             b.speed *= 0.85
             b.wobble = max(b.wobble, 10)
             return [("boss", "shoved")]
+        if hz.kind == "wisp":                                 # a ghost's chill: heat and speed
+            b.external_heat(-WISP_CHILL * C.HEAT_BAR, ev)
+            b.speed *= WISP_KEEP
+            b.wobble = max(b.wobble, 8)
+            return [("boss", "chilled")]
         if hz.kind == "pyro":
             b.external_heat(2 * C.HEAT_BAR, ev)
             return [("boss", "scorched")]
@@ -739,8 +758,9 @@ class BossChase:
 
 
 def hunter_controls(race, c):
-    """Boss sense for AI players (sims, tests): steer to the lit lantern, hang back
-    while the shield is shut, ride overheating into the Inferno. Rides the
+    """Boss sense for AI players (sims, tests): steer to the lit hatch / the soul
+    lantern once it's dark, hang back while the shield is shut or the lights are on,
+    ride overheating into the Inferno. Rides the
     ordinary AI's controls otherwise."""
     ch = race.chase
     if ch is None or ch.outcome:
@@ -755,14 +775,14 @@ def hunter_controls(race, c):
             free = [l for l in (b.lane - 1, b.lane + 1) if 0 <= l < C.LANES and l not in busy]
             if free:
                 c.lane_up, c.lane_down = free[0] < b.lane, free[0] > b.lane
-    if ch.gap(b) > 5 * TILE or (ch.weak not in ("core", "hatch") and not ch.in_window(t)):
+    if ch.gap(b) > 5 * TILE or (ch.weak not in ("core", "hatch", "soul") and not ch.in_window(t)):
         if b.one_button and not b.airborne:                   # chasing: ride hot, it outruns the warm band
             c.a, c.b = b.temp < (C.ONE_OVERHEAT_AT + 0.5 if ch.gap(b) < 12 * TILE else C.ONE_HOT_AT + 3.5), False
         if ch.gap(b) > 5 * TILE:
             return c
-    if ch.weak in ("lantern", "hatch") and not b.airborne:
+    if not b.airborne and (ch.weak == "hatch" or (ch.weak == "soul" and ch.shield(t) == "open")):
         c.lane_up, c.lane_down = b.lane > ch.lantern, b.lane < ch.lantern
-    if ch.weak == "hatch" and ch.shield(t) != "open" and ch.gap(b) < 2.5 * TILE:
+    if ch.weak in ("hatch", "soul") and ch.shield(t) != "open" and ch.gap(b) < 2.5 * TILE:
         c.a = c.b = False
     elif ch.weak == "core":
         if b.one_button:

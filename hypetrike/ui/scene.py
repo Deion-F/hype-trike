@@ -299,11 +299,13 @@ class RaceScene(Scene):
 
     BOSS_POPUPS = {
         "bomb": ("MUD BOMB INCOMING!", (200, 150, 90)), "devil": ("DUST DEVIL!", (236, 206, 140)),
-        "shoved": ("SHOVED!", (236, 206, 140)), "blackout": ("LIGHTS OUT...", (190, 140, 255)),
+        "shoved": ("SHOVED!", (236, 206, 140)), "douse": ("LIGHTS OUT - RAM THE LANTERN STILL BURNING!", (200, 160, 255)),
+        "wisp": ("WISPS!", (200, 230, 255)), "chilled": ("CHILLED -HEAT", (150, 210, 255)),
+        "soul_hop": ("IT MOVED!", (200, 160, 255)),
         "pyro": ("PYRO CANNONS!", (255, 170, 60)), "scorched": ("SCORCHED +HEAT", (255, 120, 40)),
         "eruption": ("ERUPTION!", (255, 110, 30)), "lava": ("LAVA! +SPEED +HEAT", (255, 130, 40)),
         "window": ("IT'S BRAKING - STRIKE!", C.GOOD), "minion_bump": ("BLOCKED!", (230, 200, 200)),
-        "spotlight": ("SPOTLIGHT ON YOU - RAM IT!", (255, 230, 120)), "lantern": ("LANTERN MOVED", (200, 160, 255)),
+        "spotlight": ("SPOTLIGHT ON YOU - RAM IT!", (255, 230, 120)),
         "hatch": ("NEW HATCH LIT - GET IN ITS LANE!", (190, 230, 110)),
         "escaping": ("IT'S GETTING AWAY!", C.DANGER), "escaped": ("IT GOT AWAY...", C.DANGER),
         "wrecked": ("BOSS WRECKED!", C.ACCENT),
@@ -312,12 +314,13 @@ class RaceScene(Scene):
     BONK_HINTS = {
         "roof": "TOO LOW - JUMP INTO THE GLOWING ZONE!", "hatch_lane": "WRONG LANE - GET IN THE HATCH'S LANE!",
         "hatch_shut": "SHIELD'S DOWN - WAIT FOR IT TO LIFT!",
-        "lantern": "WRONG LANE - RAM THE LIT LANTERN!", "spotlight": "LAND A PERFECT FIRST!",
+        "soul_shut": "DECOYS! WAIT FOR ITS LIGHTS TO DIE", "soul_lane": "WRONG LANE - RAM THE LANTERN STILL BURNING!",
+        "spotlight": "LAND A PERFECT FIRST!",
         "core": "TOO COLD - RAM IT OVERHEATING!",
     }
     BOSS_SOUND = {"hit": "explode", "wrecked": "finish", "bonk": "rough", "minion_bump": "bump",
                   "shoved": "rough", "scorched": "rough", "lava": "heatpad", "spotlight": "perfect",
-                  "escaping": "overheat", "window": "lap", "minion": None, "lantern": None}
+                  "escaping": "overheat", "window": "lap", "douse": "lap", "minion": None, "chilled": "rough"}
 
     def _boss_popup(self, e, sx, sy):
         kind = e[1]
@@ -343,11 +346,11 @@ class RaceScene(Scene):
             self.renderer.emit_burst(self.race.bike, (255, 210, 80), 8, 2.5)
         elif kind == "minion":
             pass
-        elif kind in ("lantern", "wrecked"):
-            pass                                   # the lantern shows it; the result panel says it
+        elif kind == "wrecked":
+            pass                                   # the result panel says it
         else:
             text, col = self.BOSS_POPUPS.get(kind, (kind.upper(), C.ACCENT))
-            if kind in ("shoved", "scorched", "lava", "minion_bump"):
+            if kind in ("shoved", "scorched", "lava", "minion_bump", "chilled"):
                 self.popups.add(text, col, sx, sy - 44, 45)                    # it got you
             else:
                 self.popups.add(text, col, W // 2, 88, 70)                      # the boss acts
@@ -374,7 +377,7 @@ class RaceScene(Scene):
         sx = C.BIKE_SCREEN_X + (ch.x - cam)
         W = self.app.view.width
         if boss_rig.on_screen(sx, W):
-            if ch.weak in ("hatch", "lantern") and ch.outcome is None:
+            if ch.weak == "hatch" and ch.outcome is None:
                 self._draw_lane_guide(surf, ch, sx, cam)
             boss_rig.draw(surf, self.race.boss, sx, self.ticks,
                           boss_rig.Look(ch, self.race.time_ticks, self.race.bike))
@@ -382,11 +385,11 @@ class RaceScene(Scene):
             self._draw_rig_pointer(surf, ch, W)
 
     def _draw_lane_guide(self, surf, ch, sx, cam):
-        """Chevrons on the ground leading to the weak point's lane (hatch / lantern),
-        green while it's open to a hit."""
+        """Chevrons on the ground leading to the Mud Baron's hatch lane, green while
+        it's open to a hit."""
         lane = ch.lantern
         t = self.race.time_ticks
-        live = ch.weak == "lantern" or ch.shield(t) == "open"
+        live = ch.shield(t) == "open"
         from ui.boss_rig import HIT
         col = HIT if live else (230, 230, 210)
         tr = self.race.track
@@ -428,8 +431,10 @@ class RaceScene(Scene):
         surf.blit(beam, (0, 0))
 
     def _draw_blackout(self, surf, rd, b, cam):
-        """Phantom's Blackout: the screen goes dark except a headlight round you."""
-        k = self.race.brain.dark(self.race.time_ticks)
+        """Phantom's lights out: the screen goes dark except a headlight round you
+        and the soul lantern still burning on its tail."""
+        ch = self.race.chase
+        k = ch.dark(self.race.time_ticks)
         if k <= 0:
             return
         W, H = surf.get_size()
@@ -439,6 +444,9 @@ class RaceScene(Scene):
         for r, a in ((95, 0.75), (70, 0.45), (48, 0.15)):          # soft-edged headlight
             pygame.draw.circle(shade, (4, 2, 12, int(235 * k * a)), (int(sx + 40), int(sy - 10)), r)
         surf.blit(shade, (0, 0))
+        from ui import boss_rig
+        boss_rig.soul_glow(surf, C.BIKE_SCREEN_X + (ch.x - cam), self.ticks,
+                           boss_rig.Look(ch, self.race.time_ticks, b))
 
     def _draw_overheating(self, surf, rd, b, cam):
         """Above your heat gauge in the top zones: HOT (faster), OVERHEATING (fastest,

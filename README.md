@@ -35,7 +35,7 @@ Garage's RESET BIKE / RESET ALL buttons refund upgrades (tap twice, or `R` /
 Boss races are chases. Each biome's boss drives a huge rig that fills all four
 lanes, so you can't pass it. It drives off at the start, lays the track as it
 goes and drops slower minions behind it. Catch it and hit its weak point three
-times (a shielded hatch, a high vent, a lantern, a spotlight or its core: the intro says
+times (a shielded hatch, a high vent, the lantern still lit when the lights die, a spotlight or its core: the intro says
 which, and the hit zone glows green) before it
 gets too far ahead.
 
