@@ -1,12 +1,12 @@
 # Builds the browser version with pygbag (tools/build_web.sh) and publishes it to
 # GitHub Pages, so https://deionf.com/hype-trike/ starts the game directly.
-# To deploy from main later: change the branch below and in
-# Settings -> Environments -> github-pages -> Deployment branches.
+# Deploys from main (also allowed in Settings -> Environments -> github-pages ->
+# Deployment branches). Run it by hand from the Actions tab for another branch.
 name: Deploy web build
 
 on:
   push:
-    branches: [mouse-controls-one-button]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
